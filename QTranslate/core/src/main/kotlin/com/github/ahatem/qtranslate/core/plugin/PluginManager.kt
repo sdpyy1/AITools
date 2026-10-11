@@ -1,0 +1,621 @@
+package com.github.ahatem.qtranslate.core.plugin
+
+import com.github.ahatem.qtranslate.api.plugin.Service
+import com.github.ahatem.qtranslate.api.plugin.ServiceError
+import com.github.ahatem.qtranslate.core.plugin.installer.PluginInstallLocation
+import com.github.ahatem.qtranslate.core.plugin.installer.PluginInstaller
+import com.github.ahatem.qtranslate.core.plugin.lifecycle.PluginLifecycleHandler
+import com.github.ahatem.qtranslate.core.plugin.registry.PluginContainer
+import com.github.ahatem.qtranslate.core.plugin.registry.PluginError
+import com.github.ahatem.qtranslate.core.plugin.registry.PluginLoadResult
+import com.github.ahatem.qtranslate.core.plugin.registry.PluginRegistry
+import com.github.ahatem.qtranslate.core.plugin.settings.PluginSettingsManager
+import com.github.ahatem.qtranslate.core.plugin.settings.PluginSettingsModel
+import com.github.ahatem.qtranslate.core.plugin.storage.PluginFingerprint
+import com.github.ahatem.qtranslate.core.plugin.storage.PluginFingerprintRepository
+import com.github.ahatem.qtranslate.core.plugin.http.HttpClientConfig
+import com.github.ahatem.qtranslate.core.plugin.http.toHttpClientConfig
+import com.github.ahatem.qtranslate.core.plugin.storage.AppSecretStore
+import com.github.ahatem.qtranslate.core.settings.data.NetworkConfig
+import com.github.ahatem.qtranslate.core.plugin.storage.PluginKeyValueStore
+import com.github.ahatem.qtranslate.core.plugin.text.PluginTextResolver
+import com.github.ahatem.qtranslate.core.settings.data.SettingsRepository
+import com.github.ahatem.qtranslate.core.shared.AppConstants
+import com.github.ahatem.qtranslate.core.shared.logging.LoggerFactory
+import com.github.ahatem.qtranslate.core.shared.notification.NotificationBus
+import com.github.ahatem.qtranslate.core.shared.notification.AppNotification
+import com.github.ahatem.qtranslate.core.shared.notification.NotificationCode
+import com.github.michaelbull.result.Err
+import com.github.michaelbull.result.getError
+import com.github.michaelbull.result.Result
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import java.io.File
+
+/**
+ * The central coordinator for the plugin subsystem.
+ *
+ * `PluginManager` is intentionally thin — it orchestrates its collaborators
+ * rather than owning any logic itself:
+ *
+ * - [PluginRegistry] — in-memory store of loaded plugins and their state
+ * - [PluginLifecycleHandler] — initialize / enable / disable / shutdown logic
+ * - [PluginInstaller] — install / uninstall / JAR-replacement resolution
+ * - [PluginSettingsManager] — schema building and settings application
+ * - [PluginFingerprintRepository] — JAR integrity tracking across runs
+ *
+ * ### Threading
+ * All mutations to [PluginRegistry] go through [PluginRegistry.mutex].
+ * [updateFlows] must be called after any mutation to push the new state to observers.
+ * UI observers collect [plugins] and [activeServices] on their own dispatcher.
+ */
+class PluginManager(
+    private val appDataDirectory: File,
+    private val settingsRepository: SettingsRepository,
+    private val pluginFingerprintRepository: PluginFingerprintRepository,
+    private val pluginKeyValueStore: PluginKeyValueStore,
+    private val loggerFactory: LoggerFactory,
+    private val notificationBus: NotificationBus,
+    private val networkConfig: () -> NetworkConfig,
+    /**
+     * Resolves the [com.github.ahatem.qtranslate.api.plugin.DisplayText] plugins hand back.
+     * Defaults to the fallback-only resolver so a host without localization still runs.
+     */
+    private val textResolver: PluginTextResolver = PluginTextResolver.Fallback,
+    // Where the bundled distribution keeps its plugin JARs, when that differs from the user's own
+    // folder. Those JARs are read-only here: they are loaded, but install and uninstall only ever
+    // touch appDataDirectory. Null when the two are one folder, as in a portable distribution.
+    installationRoot: File? = null
+) {
+    private companion object {
+        /** A check is a network round trip; long enough to succeed, short enough to give up on. */
+        const val VALIDATE_TIMEOUT_MS = 15_000L
+    }
+
+    private val logger = loggerFactory.getLogger("PluginManager")
+
+    /** The user's own plugin folder — the only one written to or deleted from. */
+    private val pluginsDir = File(appDataDirectory, AppConstants.PLUGIN_DIRECTORY).also { it.mkdirs() }
+
+    /** The distribution's bundled plugin folder, read-only. Null when there is only one folder. */
+    private val bundledPluginsDir: File? = installationRoot
+        ?.takeIf { it != appDataDirectory }
+        ?.let { File(it, AppConstants.PLUGIN_DIRECTORY) }
+        ?.takeIf { it.isDirectory }
+
+    /**
+     * Loads a directory and returns its results alongside the failures.
+     *
+     * The failures are copied out immediately because [PluginLoader] clears its own list on the next
+     * scan, so scanning a second folder would otherwise discard the first folder's.
+     */
+    private fun loadDirectory(
+        loader: PluginLoader,
+        directory: File
+    ): Pair<List<LoadedPluginResult>, List<PluginError>> {
+        val results = loader.loadPluginsFromDirectory(directory)
+        return results to loader.loadFailures
+    }
+
+    private val registry = PluginRegistry()
+
+    private val appSecrets = AppSecretStore(pluginKeyValueStore)
+
+    internal suspend fun currentHttpConfig(): HttpClientConfig {
+        val network = networkConfig()
+        val proxyPassword = if (network.proxyEnabled && network.proxyUrl.isNotBlank()) {
+            appSecrets.get(NetworkConfig.proxyPasswordKey)
+        } else {
+            null
+        }
+        return network.toHttpClientConfig(proxyPassword = proxyPassword)
+    }
+
+    private val lifecycleHandler = PluginLifecycleHandler(
+        appDataDirectory = appDataDirectory,
+        pluginKeyValueStore = pluginKeyValueStore,
+        notificationBus = notificationBus,
+        textResolver = textResolver,
+        loggerFactory = loggerFactory,
+        httpConfig = ::currentHttpConfig
+    )
+
+    private val installer = PluginInstaller(
+        userPluginsDirectory = pluginsDir,
+        appDataDirectory = appDataDirectory,
+        registry = registry,
+        lifecycleHandler = lifecycleHandler,
+        pluginKeyValueStore = pluginKeyValueStore,
+        settingsRepository = settingsRepository,
+        loggerFactory = loggerFactory
+    )
+
+    private val settingsManager = PluginSettingsManager(pluginKeyValueStore, loggerFactory)
+
+    private val _plugins = MutableStateFlow<List<PluginState>>(emptyList())
+    private val _activeServices = MutableStateFlow<Map<String, Service>>(emptyMap())
+    private var discoveryFailureStates: List<PluginState> = emptyList()
+
+    /**
+     * IDs whose loaded JAR came from the distribution rather than the user's own plugins folder.
+     *
+     * Empty in a portable distribution, where both are one folder and every JAR is the user's to
+     * remove.
+     */
+    private var bundledPluginIds: Set<String> = emptySet()
+
+    /** Observable list of all loaded plugins with their current state. */
+    val plugins: StateFlow<List<PluginState>> = _plugins.asStateFlow()
+
+    /** Observable map of service ID → [Service] for all currently enabled plugins. */
+    val activeServices: StateFlow<Map<String, Service>> = _activeServices.asStateFlow()
+
+    // -------------------------------------------------------------------------
+    // Startup: discovery and initialization
+    // -------------------------------------------------------------------------
+
+    /**
+     * Scans the plugins directory, validates, and initializes all discovered plugins.
+     * Plugins whose JARs have changed since the last run are paused in
+     * [PluginStatus.AWAITING_VERIFICATION] pending user confirmation.
+     */
+    suspend fun loadAndProcessPlugins() {
+        withContext(Dispatchers.IO) {
+            logger.info("Starting plugin discovery from: ${pluginsDir.absolutePath}")
+            bundledPluginsDir?.let { logger.info("Bundled plugins read from: ${it.absolutePath}") }
+
+            val knownFingerprints = pluginFingerprintRepository.loadFingerprints()
+            val disabledPluginIds = settingsRepository.loadDisabledPluginIds()
+            val loader = PluginLoader(loggerFactory.getLogger("PluginLoader"))
+
+            val discovery = discoverPlugins(loader)
+            bundledPluginIds = discovery.bundledIds
+            val loadResult = discovery.result
+            val discoveryErrors = discovery.failures + loadResult.failed + loadResult.skipped
+            discoveryFailureStates = discoveryErrors.mapIndexed(::toFailedPluginState)
+
+            logDiscoverySummary(loadResult, discovery.failures)
+
+            supervisorScope {
+                loadResult.successful.map { result ->
+                    async {
+                        val savedHash = knownFingerprints[result.manifest.id]
+                        if (savedHash != null && result.jarHash != savedHash) {
+                            handleReplacedPlugin(result)
+                        } else {
+                            initializePlugin(result, disabledPluginIds)
+                        }
+                    }
+                }.joinAll()
+            }
+
+            val allPlugins = registry.mutex.withLock { registry.getAll() }
+            val enabled = allPlugins.count { it.status == PluginStatus.ENABLED }
+            logger.info(
+                "Plugin loading complete: ${allPlugins.size} total, $enabled enabled."
+            )
+
+            // Surface load failures and JAR-change warnings to the UI via NotificationBus.
+            // Errors that happened during validateAndFilter are in loadResult.failed —
+            // those plugins never made it into the registry so we report them separately.
+            discoveryErrors.forEach { error ->
+                notificationBus.post(
+                    AppNotification(
+                        type           = com.github.ahatem.qtranslate.api.plugin.NotificationType.ERROR,
+                        code           = NotificationCode.Custom("Plugin failed to load", "${error.pluginId}: ${error.message}"),
+                        sourcePluginId = error.pluginId
+                    )
+                )
+            }
+
+            // Plugins that loaded but are paused pending user confirmation
+            allPlugins.filter { it.status == PluginStatus.AWAITING_VERIFICATION }.forEach { container ->
+                notificationBus.post(
+                    AppNotification(
+                        type           = com.github.ahatem.qtranslate.api.plugin.NotificationType.WARNING,
+                        code           = NotificationCode.Custom("Plugin update detected", "${container.id}: JAR has changed — open Plugin Manager to verify."),
+                        sourcePluginId = container.id
+                    )
+                )
+            }
+
+            // First-run / no plugins: guide the user
+            if (allPlugins.isEmpty()) {
+                notificationBus.post(
+                    AppNotification(
+                        type = com.github.ahatem.qtranslate.api.plugin.NotificationType.WARNING,
+                        code = NotificationCode.Custom("No plugins found", "Drop plugin JARs into the plugins folder and restart, or install via Plugin Manager.")
+                    )
+                )
+            } else if (enabled == 0) {
+                notificationBus.post(
+                    AppNotification(
+                        type = com.github.ahatem.qtranslate.api.plugin.NotificationType.WARNING,
+                        code = NotificationCode.Custom("No services active", "All plugins are disabled or failed. Open Plugin Manager to enable them.")
+                    )
+                )
+            }
+        }
+
+        updateFlows()
+    }
+
+    // -------------------------------------------------------------------------
+    // Enable / Disable
+    // -------------------------------------------------------------------------
+
+    suspend fun enablePlugin(pluginId: String) {
+        val container = registry.mutex.withLock { registry.get(pluginId) } ?: return
+        if (container.status == PluginStatus.ENABLED) return
+
+        lifecycleHandler.enable(container)
+
+        val currentDisabled = settingsRepository.loadDisabledPluginIds()
+        settingsRepository.saveDisabledPluginIds(currentDisabled - pluginId)
+
+        updateFlows()
+    }
+
+    suspend fun disablePlugin(pluginId: String) {
+        val container = registry.mutex.withLock { registry.get(pluginId) } ?: return
+        if (container.status != PluginStatus.ENABLED) return
+
+        lifecycleHandler.disable(container)
+
+        val currentDisabled = settingsRepository.loadDisabledPluginIds()
+        settingsRepository.saveDisabledPluginIds(currentDisabled + pluginId)
+
+        updateFlows()
+    }
+
+    // -------------------------------------------------------------------------
+    // Installation & JAR-replacement resolution (delegate to PluginInstaller)
+    // -------------------------------------------------------------------------
+
+    suspend fun installPlugin(sourceJar: File): Result<Unit, String> =
+        installer.installPlugin(sourceJar).also { updateFlows() }
+
+    /**
+     * Whether [pluginId] is a plugin the distribution ships, and so may not be uninstalled.
+     *
+     * The UI asks this before offering the action. A bundled plugin can still be disabled, which is
+     * the operation that actually turns it off.
+     */
+    fun isBundled(pluginId: String): Boolean = bundledPluginIds.contains(pluginId)
+
+    /**
+     * Removes a user-installed plugin.
+     *
+     * A bundled plugin is refused outright. Ignoring the request would bring it back on the next
+     * launch, and deleting its JAR would leave an installed copy without a component it cannot
+     * restore, so neither half of "uninstall until restart" is offered.
+     */
+    suspend fun uninstallPlugin(pluginId: String) {
+        if (isBundled(pluginId)) {
+            logger.info("Refusing to uninstall bundled plugin '$pluginId'; disable it instead.")
+            return
+        }
+
+        val discoveryFailure = discoveryFailureStates.firstOrNull { it.id == pluginId }
+        if (discoveryFailure != null) {
+            val jar = File(discoveryFailure.jarPath)
+            // A JAR the distribution shipped is not the user's to remove, so removing the broken
+            // one is limited to the user's own folder exactly as the normal uninstall path is.
+            val removable = PluginInstallLocation.isUserInstalled(pluginsDir, jar)
+            if (removable) {
+                withContext(Dispatchers.IO) { jar.delete() }
+            } else {
+                logger.info("Kept bundled plugin JAR at ${jar.absolutePath}")
+            }
+            discoveryFailureStates = discoveryFailureStates.filterNot { it.id == pluginId }
+            updateFlows()
+            return
+        }
+        installer.uninstallPlugin(pluginId)
+        updateFlows()
+    }
+
+    suspend fun resolveAsUpdate(pluginId: String) {
+        installer.resolveAsUpdate(pluginId)
+        updateFlows()
+    }
+
+    suspend fun resolveAsCleanInstall(pluginId: String) {
+        installer.resolveAsCleanInstall(pluginId)
+        updateFlows()
+    }
+
+    // -------------------------------------------------------------------------
+    // Validation
+    // -------------------------------------------------------------------------
+
+    /**
+     * Asks each of a plugin's services whether it is correctly configured.
+     *
+     * Runs the services concurrently — a check is a network round trip, and a plugin exposing six
+     * of them should not take six times as long to answer. Each is given its own timeout so one
+     * unresponsive endpoint cannot hold up the rest.
+     *
+     * A service that does not implement a check answers successfully, which is honest: there is
+     * nothing about it that can be misconfigured.
+     */
+    suspend fun validateServices(pluginId: String): List<ServiceValidation> {
+        val container = registry.mutex.withLock { registry.get(pluginId) } ?: return emptyList()
+
+        return withContext(Dispatchers.IO) {
+            supervisorScope {
+                container.services.map { service ->
+                    async {
+                        val outcome = withTimeoutOrNull(VALIDATE_TIMEOUT_MS) {
+                            runCatching { service.validate() }
+                                .getOrElse { thrown ->
+                                    // A check that throws is a failed check, not a crashed app.
+                                    Err(
+                                        ServiceError.UnknownError(
+                                            "Validation threw ${thrown::class.java.simpleName}: ${thrown.message}",
+                                            thrown
+                                        )
+                                    )
+                                }
+                        } ?: Err(
+                            ServiceError.TimeoutError(
+                                "Validation did not answer within ${VALIDATE_TIMEOUT_MS / 1000}s"
+                            )
+                        )
+
+                        ServiceValidation(
+                            serviceId = container.serviceIdOf(service),
+                            serviceName = service.name,
+                            error = outcome.getError()
+                        )
+                    }
+                }.awaitAll()
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Settings
+    // -------------------------------------------------------------------------
+
+    suspend fun getPluginSettingsModel(pluginId: String): PluginSettingsModel? {
+        val container = registry.mutex.withLock { registry.get(pluginId) } ?: return null
+        return settingsManager.getSettingsModel(pluginId, container.plugin)
+    }
+
+    /**
+     * Returns the live settings instance for [pluginId], cast to
+     * [com.github.ahatem.qtranslate.api.plugin.PluginSettings.Configurable], or `null`
+     * if the plugin has no configurable settings.
+     *
+     * Used by the settings dialog to invoke `@PluginAction`-annotated methods on the live
+     * settings object.
+     */
+    suspend fun getPluginSettingsInstance(pluginId: String): com.github.ahatem.qtranslate.api.plugin.PluginSettings.Configurable? {
+        val container = registry.mutex.withLock { registry.get(pluginId) } ?: return null
+        return container.plugin.getSettings() as? com.github.ahatem.qtranslate.api.plugin.PluginSettings.Configurable
+    }
+
+    /**
+     * Applies [settingsMap] to the plugin identified by [pluginId].
+     * On success, rebuilds the plugin's service list and updates flows.
+     */
+    suspend fun applySettingsFromMap(pluginId: String, settingsMap: Map<String, String>): Result<Unit, ServiceError> {
+        val container = registry.mutex.withLock { registry.get(pluginId) }
+            ?: return Err(ServiceError.UnknownError("Plugin '$pluginId' not found", null))
+
+        val result = settingsManager.applySettings(pluginId, container.plugin, settingsMap)
+
+        if (result.isOk) {
+            registry.mutex.withLock {
+                container.services = container.plugin.getServices()
+                container.declaredServices = container.services
+            }
+            updateFlows()
+        }
+
+        return result
+    }
+
+    // -------------------------------------------------------------------------
+    // Shutdown
+    // -------------------------------------------------------------------------
+
+    suspend fun shutdown() {
+        logger.info("Shutting down all plugins...")
+
+        saveRegistryOnShutdown()
+
+        registry.mutex.withLock { registry.getAll().toList() }.forEach { container ->
+            lifecycleHandler.shutdown(container)
+        }
+
+        registry.mutex.withLock { registry.clear() }
+        discoveryFailureStates = emptyList()
+        updateFlows()
+
+        logger.info("All plugins shut down.")
+    }
+
+    // -------------------------------------------------------------------------
+    // Service routing
+    // -------------------------------------------------------------------------
+
+    /** Returns the [ClassLoader] that loaded the plugin providing [serviceId], or null. */
+    fun getPluginClassLoaderForService(serviceId: String): ClassLoader? =
+        registry.findByServiceId(serviceId)?.classLoader
+
+    // -------------------------------------------------------------------------
+    // Internal helpers
+    // -------------------------------------------------------------------------
+
+    /**
+ * Loads plugins from the user's folder and, when it is separate, from the distribution's.
+ *
+     * A bundled JAR whose ID the user has since installed is dropped rather than reported as a
+     * duplicate: that shadowing is how a user replaces a bundled plugin without the installation
+     * directory being written to. Two JARs claiming one ID within the same folder stay ambiguous,
+     * and [PluginRegistry.validateAndFilter] still rejects both.
+     */
+    private fun discoverPlugins(loader: PluginLoader): PluginDiscovery {
+        val (userResults, userFailures) = loadDirectory(loader, pluginsDir)
+        val bundledDir = bundledPluginsDir ?: return PluginDiscovery(
+            results = userResults,
+            bundledIds = emptySet(),
+            result = registry.validateAndFilter(userResults),
+            failures = userFailures
+        )
+
+        val (bundledAll, bundledFailures) = loadDirectory(loader, bundledDir)
+        val userIds = userResults.mapTo(mutableSetOf()) { it.manifest.id }
+        val bundledResults = bundledAll.filter { it.manifest.id !in userIds }
+        val shadowed = bundledAll.size - bundledResults.size
+        if (shadowed > 0) {
+            logger.info("$shadowed bundled plugin(s) superseded by a user-installed copy.")
+        }
+
+        // The user's folder is listed first so that a duplicate ID spanning the two is reported with
+        // the user's copy as the one already seen.
+        val all = userResults + bundledResults
+        return PluginDiscovery(
+            results = all,
+            bundledIds = bundledResults.mapTo(mutableSetOf()) { it.manifest.id },
+            result = registry.validateAndFilter(all),
+            failures = userFailures + bundledFailures
+        )
+    }
+
+    /** What discovery found: the plugins to initialise, which are bundled, and the ones to report. */
+    private data class PluginDiscovery(
+        val results: List<LoadedPluginResult>,
+        val bundledIds: Set<String>,
+        val result: PluginLoadResult,
+        val failures: List<PluginError>
+    )
+
+    private suspend fun initializePlugin(result: LoadedPluginResult, disabledPluginIds: Set<String>) {
+        val context = lifecycleHandler.createContext(result)
+        val container = PluginContainer(
+            plugin = result.plugin,
+            manifest = result.manifest,
+            context = context,
+            jarFile = result.jarFile,
+            jarHash = result.jarHash,
+            classLoader = result.classLoader,
+            bundled = bundledPluginIds.contains(result.manifest.id)
+        )
+
+        val initialized = lifecycleHandler.initialize(container)
+        if (initialized) {
+            container.declaredServices = runCatching { container.plugin.getServices() }
+                .onFailure { logger.warn("Could not inspect services for '${container.id}': ${it.message}") }
+                .getOrDefault(emptyList())
+        }
+        registry.mutex.withLock { registry.put(container) }
+
+        if (initialized && container.id !in disabledPluginIds) {
+            lifecycleHandler.enable(container)
+        }
+    }
+
+    private suspend fun handleReplacedPlugin(result: LoadedPluginResult) {
+        logger.warn(
+            "Plugin '${result.manifest.id}' JAR has changed since last run. " +
+                    "Pausing until user confirms the change."
+        )
+        val context = lifecycleHandler.createContext(result)
+        val container = PluginContainer(
+            plugin = result.plugin,
+            manifest = result.manifest,
+            context = context,
+            jarFile = result.jarFile,
+            jarHash = result.jarHash,
+            classLoader = result.classLoader,
+            bundled = bundledPluginIds.contains(result.manifest.id),
+            status = PluginStatus.AWAITING_VERIFICATION
+        )
+        registry.mutex.withLock { registry.put(container) }
+    }
+
+    private suspend fun saveRegistryOnShutdown() {
+        val fingerprints = registry.mutex.withLock {
+            registry.getAll()
+                .filter {
+                    it.status != PluginStatus.FAILED &&
+                            it.status != PluginStatus.AWAITING_VERIFICATION
+                }
+                .map { PluginFingerprint(it.id, it.jarHash) }
+        }
+        pluginFingerprintRepository.storeFingerprints(fingerprints)
+        logger.info("Saved plugin registry (${fingerprints.size} fingerprint(s)).")
+    }
+
+    private fun logDiscoverySummary(
+        loadResult: PluginLoadResult,
+        loaderFailures: List<PluginError>
+    ) {
+        logger.info(
+            "Plugin discovery: ${loadResult.successful.size} valid, " +
+                    "${loadResult.failed.size + loaderFailures.size} failed, ${loadResult.skipped.size} skipped"
+        )
+        loadResult.successful.forEach {
+            logger.info("  LOADED  ${it.manifest.id} v${it.manifest.version} (${it.jarFile.name})")
+        }
+        loaderFailures.forEach { logger.error("  FAILED  ${it.pluginId}: ${it.message}", it.cause) }
+        loadResult.failed.forEach { logger.error("  FAILED  ${it.pluginId}: ${it.message}", it.cause) }
+        loadResult.skipped.forEach { logger.warn("  SKIPPED ${it.pluginId}: ${it.message}") }
+    }
+
+    private fun toFailedPluginState(index: Int, error: PluginError): PluginState {
+        val jarPath = when (error) {
+            is PluginError.LoadFailure -> error.jarPath
+            is PluginError.InvalidManifest -> error.jarPath
+            // Duplicate errors carry only JAR names, so the folder they sat in is not recoverable from the
+            // error itself. Both folders are searched, and the match inside the user's own folder
+            // wins, because only that one may be deleted by the uninstall path below.
+            is PluginError.DuplicateId ->
+                listOf(pluginsDir, bundledPluginsDir)
+                    .filterNotNull()
+                    .firstNotNullOfOrNull { dir -> File(dir, error.duplicateJar).takeIf { it.isFile } }
+                    ?.absolutePath
+                    ?: File(pluginsDir, error.duplicateJar).absolutePath
+            else -> File(pluginsDir, error.pluginId).absolutePath
+        }
+        val displayName = File(jarPath).name.takeIf { it.isNotBlank() } ?: error.pluginId
+        val safeName = displayName.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-')
+        return PluginState(
+            manifest = PluginManifest(
+                id = "load-failure-$index-$safeName",
+                name = displayName,
+                version = "unknown",
+                author = "unknown",
+                description = "This plugin could not be loaded.",
+                minApiVersion = "1.0.0"
+            ),
+            status = PluginStatus.FAILED,
+            jarPath = jarPath,
+            lastError = error
+        )
+    }
+
+    /**
+     * Pushes the current registry state to both StateFlows.
+     * Both flows are updated inside a single mutex lock so they always reflect a
+     * consistent snapshot of the same registry state.
+     */
+    private suspend fun updateFlows() {
+        registry.mutex.withLock {
+            _plugins.value = registry.snapshot() + discoveryFailureStates
+            _activeServices.value = registry.activeServices()
+        }
+    }
+}

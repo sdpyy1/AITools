@@ -1,0 +1,55 @@
+// The code in this file is a convention plugin - a Gradle mechanism for sharing reusable build logic.
+// `buildSrc` is a Gradle-recognized directory and every plugin there will be easily available in the rest of the build.
+package buildsrc.convention
+
+import org.gradle.api.tasks.testing.logging.TestLogEvent
+import org.gradle.language.jvm.tasks.ProcessResources
+
+plugins {
+    // Apply the Kotlin JVM plugin to add support for Kotlin in JVM projects.
+    kotlin("jvm")
+}
+
+kotlin {
+    // Use a specific Java version to make it easier to work in different environments.
+    jvmToolchain(21)
+
+    compilerOptions {
+        // Keep the public plugin API's bytecode at Java 11; release dependencies require Java 17.
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
+    }
+}
+
+tasks.withType<JavaCompile>().configureEach {
+    sourceCompatibility = "11"
+    targetCompatibility = "11"
+}
+
+tasks.named<ProcessResources>("processResources") {
+    from(rootProject.file("LICENSE")) {
+        into("META-INF")
+    }
+    from(rootProject.file("NOTICE.md")) {
+        into("META-INF")
+    }
+    from(rootProject.file("LICENSES")) {
+        into("META-INF/LICENSES")
+    }
+    from(rootProject.file("THIRD_PARTY_LICENSES")) {
+        into("META-INF/THIRD_PARTY_LICENSES")
+    }
+}
+
+tasks.withType<Test>().configureEach {
+    // Configure all test Gradle tasks to use JUnitPlatform.
+    useJUnitPlatform()
+
+    // Log information about all test results, not only the failed ones.
+    testLogging {
+        events(
+            TestLogEvent.FAILED,
+            TestLogEvent.PASSED,
+            TestLogEvent.SKIPPED
+        )
+    }
+}

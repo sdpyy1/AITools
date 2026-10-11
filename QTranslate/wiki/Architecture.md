@@ -1,0 +1,234 @@
+# Architecture
+
+QTranslate is structured around Clean Architecture with an MVI (Model-View-Intent) pattern for the UI layer. This document explains the structure and the reasoning behind the key decisions.
+
+---
+
+## Module overview
+
+```
+┌─────────────────────────────────────────────┐
+│                   :app                      │  ← composition root, main()
+└─────────────────┬───────────────────────────┘
+                  │ depends on
+┌─────────────────▼───────────────────────────┐
+│               :ui-swing                     │  ← Swing UI, Renderable<State>
+└─────────────────┬───────────────────────────┘
+                  │
+┌─────────────────▼───────────────────────────┐
+│                 :core                       │  ← business logic, stores, use cases
+└─────────────────┬───────────────────────────┘
+                  │
+┌─────────────────▼───────────────────────────┐
+│                  :api                       │  ← interfaces only
+└─────────────────────────────────────────────┘
+         ▲
+         │  plugins depend only on :api
+┌────────┴────────────────────────────────────┐
+│          :plugins:google-services           │
+│          :plugins:bing-services             │
+│          :plugins:...                       │
+└─────────────────────────────────────────────┘
+```
+
+**Dependency rule:** lower layers never import from upper layers. `:core` has no Swing imports. `:api` imports only what its own interfaces need (coroutines for suspend functions, kotlin-result for `Result`). Plugins only import `:api`.
+
+---
+
+## :api — the plugin contract
+
+Everything a plugin author needs lives here: service interfaces (`Translator`, `TextToSpeech`, `OCR`, `SpellChecker`, `Dictionary`, `Summarizer`, `Rewriter`), the `Plugin` base class, `PluginContext`, `PluginSettings`, request/response data classes, and `ServiceError`.
+
+This module is intentionally minimal. Adding something to `:api` is a commitment — it becomes part of the public plugin API and breaking changes require a major version bump.
+
+---
+
+## :core — business logic
+
+### MVI stores
+
+Each screen has a `Store<State, Intent, Event>`:
+
+- **`MainStore`** — translation screen state (input text, results, history, loading)
+- **`SettingsStore`** — settings state (working draft, saved configuration)
+
+Stores hold a `MutableStateFlow<State>` and expose it as `StateFlow<State>`. They accept `Intent`s via `dispatch()` and emit one-shot `Event`s via a `Channel`.
+
+### Use cases
+
+Business logic lives in use cases, not stores. Each use case does one thing:
+
+- `TranslateTextUseCase` — calls the active translator, manages history, orchestrates extra output
+- `SummarizeUseCase` — calls the active summarizer with the configured `SummaryLength`
+- `RewriteUseCase` — calls the active rewriter with the configured `RewriteStyle`
+- `HandleTextToSpeechUseCase` — resolves language, calls TTS, plays audio
+- `OcrAndTranslateUseCase` — extracts text from image, returns it to the store
+- `PerformSpellCheckUseCase` — calls spell checker, returns corrections
+- `SelectActiveServiceUseCase` — observes available services, resolves language lists
+- `CheckForUpdatesUseCase` — queries GitHub releases API
+
+### Plugin subsystem
+
+`PluginManager` orchestrates:
+- `PluginLoader` — scans the `plugins/` directory, validates manifests
+- `PluginRegistry` — thread-safe in-memory store of loaded plugins
+- `PluginLifecycleHandler` — calls `initialize`, `onEnable`, `onDisable`, `shutdown`
+- `PluginInstaller` — copies JARs, handles install/uninstall/verification
+- `PluginSettingsManager` — reflects `@field:Setting`, `@SettingGroup`, and `@PluginAction` annotations to build the settings UI dynamically
+
+### Plugin settings annotation system
+
+Settings panels are generated entirely from annotations on the plugin's `PluginSettings.Configurable` subclass — no UI code required from plugin authors:
+
+- `@field:Setting` — marks a `var` property as a settings field; declares label, type, order, validation, conditional visibility (`showIf`)
+- `@SettingGroups` / `@SettingGroup` (class-level) — organize fields into collapsible named sections
+- `@PluginAction` (method-level) — renders a button that invokes a `suspend fun(): String?` on the settings instance; result is shown as a message (useful for "Test Connection")
+- `SettingType` — `TEXT`, `PASSWORD`, `TEXTAREA`, `BOOLEAN`, `DROPDOWN`, `NUMBER`, `SLIDER`, `FILE_PATH`
+
+`DynamicPluginSettingsDialog` uses reflection to walk the settings class at runtime and build a `JPanel` from the discovered fields and actions.
+
+### Settings
+
+`SettingsRepository` persists configuration to DataStore. `SettingsStore` holds a working copy (draft) that can be edited without committing — Apply saves it, Cancel discards it.
+
+`ActiveServiceManager` resolves "which service should I use?" from the current preset and live service registry.
+
+`ConfigMigrator` handles version-to-version migration of the persisted `Configuration`. When the app loads a config file written by an older version, `ConfigMigrator` upgrades it field-by-field (adding new fields with defaults, renaming changed fields) before handing it to `SettingsRepository`. This ensures zero data loss when new settings are introduced.
+
+### Localization
+
+`LocalizationManager` loads TOML locale files from the `languages/` directory next to the JAR. It holds all string tables in `ConcurrentHashMap`s for thread-safe access. On language switch, it reloads the active locale table and emits an event that triggers a full UI re-render.
+
+The English fallback is embedded in the JAR at `core/src/main/resources/localization/embedded_en.toml` — so the app always has strings even if the `languages/` folder is missing.
+
+---
+
+### Theme system
+
+`ThemeManager` (in `:ui-swing`) manages all themes:
+
+- **Built-in themes** — 31 themes (17 custom `.theme.json` files embedded in the JAR + 14 FlatLaf IntelliJ themes bundled at compile time). Always available regardless of the external `themes/` folder.
+- **External themes** — scanned from `File(appDataDirectory, "themes")` at startup and on `reload()`. Any `.theme.json` file found there is loaded with `IntelliJTheme.createLaf()` and added to the available list. The `themes/` folder ships in the release zip alongside `languages/` and `plugins/`.
+- **OS Default** — a sentinel theme ID (`"os_default"`) that resolves to the platform-preferred dark or light theme at apply time, using OS-specific detection (Windows registry, `defaults read` on macOS).
+- **Platform defaults** — macOS → `mac_dark`/`mac_light`; Linux → `resharper_dark`/`resharper_light`; Windows → `flat_dark`/`flat_light`.
+- **Animated transitions** — uses `FlatAnimatedLafChange.showSnapshot()` / `hideSnapshotWithAnimation()` to cross-fade between themes without a visible flash.
+
+---
+
+## :ui-swing — the view layer
+
+### Renderable
+
+Every UI component that reacts to state implements:
+
+```kotlin
+interface Renderable<S : UiState> {
+    fun render(state: S)
+}
+```
+
+`render()` is always called on `Dispatchers.Swing`. Components never call business logic directly — they dispatch intents.
+
+### Intent dispatch
+
+User actions produce intents:
+
+```kotlin
+// In a button listener:
+mainStore.dispatch(MainIntent.Translate())
+```
+
+The store processes the intent, updates state, and emits a new state snapshot. `render()` is called with the new state.
+
+### Threading
+
+- State collection: `Dispatchers.Swing` via `withContext(Dispatchers.Swing)`
+- Network/IO: `Dispatchers.IO`
+- Business logic: `Dispatchers.Default`
+
+Blocking calls (`Files.copy`, JDBC, synchronous HTTP) must always be wrapped in `withContext(Dispatchers.IO)`.
+
+---
+
+## Error handling
+
+Expected failures (network errors, invalid API keys, parse failures) are returned as `Result<T, ServiceError>` using the `kotlin-result` library. Raw exceptions are only for truly unexpected conditions (programming errors, OOM).
+
+`ServiceError` is a sealed class:
+- `NetworkError` — connectivity issues
+- `AuthError` — invalid or expired credentials
+- `RateLimitError` — API quota exceeded (retryable)
+- `InvalidResponseError` — unexpected API response format
+- `UnknownError` — catch-all for unexpected failures
+
+---
+
+## Settings — draft and commit
+
+`SettingsStore` maintains two copies of the configuration:
+- **Saved** — the persisted configuration loaded from DataStore on startup
+- **Working draft** — an in-memory copy the user edits in the settings dialog
+
+`UpdateDraft` intents mutate the working draft without touching the saved config. `SaveChanges` persists the draft. `CancelChanges` discards it and reverts to the saved copy. This means the user can freely edit settings and cancel without any side effects — nothing is written to disk until they explicitly save.
+
+`applyDraft(store) { it.copy(...) }` is the correct way to update the draft from a settings panel.
+
+Some settings take effect immediately without going through the draft cycle — `CloseButtonBehavior` is one example. When the user picks "remember my choice" in the close dialog, the app dispatches `ToggleSetting` + `SaveChanges` directly so the preference persists without the user having to open Settings. Use `ToggleSetting` for this pattern; use `UpdateDraft` for anything that should be subject to OK/Cancel/Apply. It reads the current working draft atomically and dispatches `UpdateDraft` with the result — avoids stale reads when two fields change in rapid succession.
+
+---
+
+## RTL support
+
+QTranslate mirrors its entire layout for RTL languages (Arabic, Hebrew, Farsi, etc.). The mechanism:
+
+1. `LocalizationManager` exposes `isRtl: Boolean` based on the active language's `[meta] rtl = true` field
+2. On language change, `MainAppFrame` calls `applyComponentOrientation(ComponentOrientation.RIGHT_TO_LEFT)` on the root pane — Swing propagates this down the component tree
+3. Layout managers that respect orientation (`BorderLayout.LINE_START/LINE_END`, `FlowLayout.LEADING/TRAILING`, `GridBagConstraints.LINE_START`) flip automatically
+4. `LayoutManager.switchLayout(id, isRtl)` rebuilds the main content layout, passing `isRtl` so `SideBySideLayout` swaps the input/output panel positions
+
+The key rule: never use absolute constants (`WEST`, `EAST`, `LEFT`, `RIGHT`) in layout code — always use orientation-relative ones (`LINE_START`, `LINE_END`, `LEADING`, `TRAILING`).
+
+---
+
+## Hotkey system
+
+Hotkeys are data-driven — stored in `Configuration.hotkeys` as `List<HotkeyBinding>`. Each binding holds a `keyCode`, `modifiers`, `HotkeyAction`, and `HotkeyScope`.
+
+`HotkeyScope` controls where the hotkey fires:
+- `GLOBAL` — registered with the native input backend, fires system-wide even when QTranslate is not focused
+- `LOCAL` — registered via Swing `InputMap`/`ActionMap`, fires only when QTranslate has focus
+
+Global input runs on **QInput** (`ui-swing/.../main/input/QInputBackend.kt`), a native runtime accessed through the `GlobalInputBackend` interface. `MainGlobalKeyListener` owns the boundary between the two scopes and the backend: it derives the desired `GLOBAL` registration set from the current bindings, reconciles it against the backend through a `HotkeyRegistrationLedger` — so a registration the platform refuses to release stays non-dispatchable instead of silently firing — and exposes `LOCAL` bindings via `getLocalBindings()` for `MainAppFrame` to register on the `rootPane`.
+
+`SHOW_MAIN_WINDOW` is always `GLOBAL` and special-cased: it fires on a double-Ctrl sequence tracked from raw key events by `DoubleCtrlDetector`, not a registered KeyStroke.
+
+**Hotkey presets** (`HotkeyPresets.LEGACY`, `HotkeyPresets.MODERN`) are ready-made binding sets a user can switch to from Settings → Hotkeys. `HotkeyPresets.identify()` compares the current bindings against both and reports `HotkeyPresetKind.CUSTOM` the moment they diverge from either — there is no persisted "which preset am I on" flag, it is always derived from the bindings themselves.
+
+---
+
+## Notification system
+
+`NotificationBus` is a `SharedFlow`-based pub/sub channel for cross-component notifications. `PluginManager` posts to it when plugins fail to load, need verification, or when no plugins are found at all. `MainAppFrame` subscribes and routes messages to the status bar via `StatusBarController.handleNotification()`.
+
+This keeps `PluginManager` decoupled from the UI — it posts a domain notification, not a UI event.
+
+---
+
+## Plugin loading lifecycle
+
+```
+PluginLoader.loadPluginsFromDirectory()
+  → parse plugin.json (PluginManifest)
+  → verify API version compatibility
+  → ServiceLoader.load(Plugin::class, pluginClassLoader)
+  → PluginRegistry.put(container)
+
+PluginLifecycleHandler
+  → initialize(container)   ← Plugin.onInitialize(context)
+  → enable(container)       ← Plugin.onEnable()
+  [user action]
+  → disable(container)      ← Plugin.onDisable()
+  → shutdown(container)     ← Plugin.onShutdown()
+```
+
+Plugins whose JAR hash changed since the last run are held in `AWAITING_VERIFICATION` until the user confirms the change.

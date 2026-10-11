@@ -1,0 +1,832 @@
+package com.github.ahatem.qtranslate.ui.swing.quicktranslate
+
+import com.github.ahatem.qtranslate.ui.swing.shared.util.clearBorder
+import com.formdev.flatlaf.extras.FlatSVGIcon
+import com.github.ahatem.qtranslate.api.language.LanguageCode
+import com.github.ahatem.qtranslate.core.localization.LocalizationManager
+import com.github.ahatem.qtranslate.core.settings.data.Position
+import com.github.ahatem.qtranslate.core.settings.data.Size
+import com.github.ahatem.qtranslate.ui.swing.shared.widgets.LanguageComboBox
+import com.github.ahatem.qtranslate.ui.swing.main.selector.TranslatorPopupButton
+import com.github.ahatem.qtranslate.ui.swing.main.selector.TranslatorSelectorState
+import com.github.ahatem.qtranslate.ui.swing.shared.icon.IconManager
+import com.github.ahatem.qtranslate.ui.swing.shared.util.*
+import com.github.ahatem.qtranslate.ui.swing.shared.widgets.ComponentMover
+import com.github.ahatem.qtranslate.ui.swing.shared.widgets.ComponentResizer
+import com.github.ahatem.qtranslate.ui.swing.shared.widgets.FloatingPopupBehavior
+import com.github.ahatem.qtranslate.ui.swing.shared.widgets.InlineLoadingBar
+import com.github.ahatem.qtranslate.ui.swing.shared.widgets.Renderable
+import com.github.ahatem.qtranslate.core.main.domain.model.ComparisonStatus
+import com.github.ahatem.qtranslate.ui.swing.main.output.CompareBoard
+import com.github.ahatem.qtranslate.ui.swing.main.output.CompareBoardState
+import com.github.ahatem.qtranslate.ui.swing.main.output.ProviderPresentation
+import com.github.ahatem.qtranslate.ui.swing.main.output.ProviderRole
+import com.github.ahatem.qtranslate.ui.swing.main.output.ProviderStatus
+import com.github.ahatem.qtranslate.ui.swing.main.output.TranslationProviderState
+import java.awt.*
+import java.awt.event.*
+import java.util.concurrent.atomic.AtomicBoolean
+import javax.swing.*
+import javax.swing.border.EmptyBorder
+import kotlin.math.abs
+import kotlin.math.max
+import com.github.ahatem.qtranslate.ui.swing.shared.icon.Icons
+import com.github.ahatem.qtranslate.ui.swing.shared.util.connectedScreenBounds
+import com.github.ahatem.qtranslate.ui.swing.shared.util.isPositionReachable
+
+
+class QuickTranslateDialog(
+    /**
+     * The main window, used only to position against. It is deliberately NOT this dialog's
+     * owner -- see FloatingPopupBehavior for why a tray application must not own these.
+     */
+    private val owner: Frame,
+    private val iconManager: IconManager,
+    private val localizationManager: LocalizationManager,
+    private val onDismiss: () -> Unit,
+    onTranslatorSelected: (String) -> Unit,
+    private val onListen: () -> Unit,
+    private val onStopListening: () -> Unit,
+    private val onCopy: () -> Unit,
+    private val onSavePosition: (Position) -> Unit,
+    private val onSaveSize: (Size) -> Unit,
+    private val onPinToggled: () -> Unit,
+    private val onSourceLanguageSelected: (LanguageCode) -> Unit = {},
+    private val onTargetLanguageSelected: (LanguageCode) -> Unit = {},
+    private val onSwapLanguages: () -> Unit = {}
+) : JDialog(null as Frame?, ModalityType.MODELESS), Renderable<QuickTranslateDialogState> {
+
+    private companion object {
+        const val RESIZE_HANDLE_SIZE = 8
+        const val PINNED_BORDER_WIDTH = 4
+        const val COPY_FEEDBACK_DURATION_MS = 1000
+        const val FADE_MS = 160
+        const val FADE_STEPS = 8
+        const val RESIZE_SAVE_DEBOUNCE_MS = 180
+    }
+
+    // Read on use, not cached. This dialog is created once and outlives any number of theme
+    // switches; a captured colour would pin the borders and button styling to whichever theme
+    // happened to be active at startup. See refreshTheme.
+    private val borderColor: Color? get() = UIManager.getColor("Component.borderColor")
+    private val accentBorderColor: Color?
+        get() = UIManager.getColor("Component.focusedBorderColor")
+            ?: UIManager.getColor("Component.accentColor")
+            ?: borderColor
+
+    /** Panels carrying a themed divider, kept so it can be redrawn in the new theme's colour. */
+    private val dividedPanels = mutableListOf<Pair<JPanel, () -> javax.swing.border.Border>>()
+
+    /**
+     * Re-applies the colours this dialog painted itself with.
+     *
+     * Borders keep the colour they were given, and switching look and feel does not revisit them,
+     * so without this the popup keeps the old theme's edges against the new background.
+     */
+    private fun refreshTheme() {
+        dividedPanels.forEach { (panel, borderOf) -> panel.border = borderOf() }
+        updatePinButtonStyle(isPinned)
+        revalidate()
+        repaint()
+    }
+
+    // title + controls
+    /**
+     * The language pair, as pickers rather than the label this used to be.
+     *
+     * Changing where a translation is going was previously a trip to the main window, which is a
+     * long way round for the most common follow-up thought: "yes, but into French".
+     *
+     * Guarded by [isRenderingLanguages] because assigning a combo's selection fires its listener,
+     * which would translate again on every render.
+     */
+    private val sourceLanguageCombo = LanguageComboBox(
+        onLanguageSelected = { if (!isRenderingLanguages) onSourceLanguageSelected(it) },
+        localizer = localizationManager,
+        compact = true
+    )
+
+    private val targetLanguageCombo = LanguageComboBox(
+        onLanguageSelected = { if (!isRenderingLanguages) onTargetLanguageSelected(it) },
+        localizer = localizationManager,
+        compact = true
+    )
+
+    private val swapButton = createButtonWithIcon(iconManager, Icons.SWAP, 13)
+        .apply { addActionListener { onSwapLanguages() } }
+
+    private var isRenderingLanguages = false
+    private val translatorComboBox = TranslatorPopupButton(iconManager, onTranslatorSelected)
+
+    private val pinButton = createToolbarButton(iconManager, Icons.PIN, 14)
+    private val listenButton = createToolbarButton(iconManager, Icons.SPEAK, 14)
+    private val copyButton = createToolbarButton(iconManager, Icons.COPY, 14)
+    private val closeButton = createToolbarButton(iconManager, Icons.CLOSE, 16)
+
+    // content: one result viewport holding the primary provider, its definition,
+    // and every comparison in a single column.
+    private val loadingBar = InlineLoadingBar()
+    private val quickBoard = CompareBoard(
+        primarySelector = translatorComboBox,
+        iconManager = iconManager
+    )
+    private val resultsView = QuickTranslateResultsView(quickBoard)
+
+    private val topPanel = createTopPanel()
+
+    // sizing/measuring
+    private val measurePane: JTextPane by lazy {
+        JTextPane().apply {
+            editorKit = quickBoard.primaryProviderView.textPaneForTest().editorKit
+            isEditable = false
+            putClientProperty("JEditorPane.honorDisplayProperties", true)
+        }
+    }
+
+    // timers and state
+    private var copyFeedbackTimer: Timer? = null
+    private var resizeSaveTimer: Timer? = null
+
+    /**
+     * Window flags, fading, idle-hide, pointer presence — shared with the other two popups.
+     *
+     * Declared ahead of [isPinned], whose setter writes into it. Kotlin initialises properties in
+     * declaration order, so the other way round leaves a window in which assigning isPinned would
+     * dereference null.
+     */
+    private val popup = FloatingPopupBehavior(
+        window = this,
+        owner = owner,
+        minimumSize = Dimension(PopupSizing.minWidth(), PopupSizing.minHeight()),
+        pinnedBorderWidth = PINNED_BORDER_WIDTH,
+        resizeHandle = RESIZE_HANDLE_SIZE
+    ).apply {
+        configureIdleHide(
+            delayMs = { (currentConfig?.idleTimeoutSeconds ?: 3) * 1000 },
+            fadeMs = FADE_MS,
+            restingOpacity = { (100f - (currentConfig?.transparencyPercentage ?: 0)) / 100f },
+            // Dismissed through the store. Hiding the window directly left the application still
+            // believing the popup was open.
+            onExpired = { onDismiss() }
+        )
+    }
+
+    // flags
+    private var isDragging = false
+    private var isResizing = false
+
+    /**
+     * Mirrored into the popup helper, whose idle-hide and pointer tracking both consult it.
+     * Two copies of "is this pinned" drifting apart means a pinned popup closing itself anyway.
+     */
+    private var isPinned = false
+        set(value) {
+            field = value
+            popup.isPinned = value
+        }
+    private var wasManuallyMoved = false
+    private var currentConfig: DialogConfig? = null
+    private var comparisonSizingEnabled = false
+
+    /** True while the popup has been asked for but is waiting for something worth showing. */
+    private var pendingShow = false
+
+    /** The trigger this popup last reacted to; see [QuickTranslateDialogState.triggerCount]. */
+    private var lastTriggerCount = 0
+
+    /**
+     * Whether speech is playing, as of the last render.
+     *
+     * The click handler is installed once and cannot see the current state, so it reads this to
+     * decide whether a press means play or stop.
+     */
+    private var currentIsTtsPlaying = false
+
+    init {
+        focusableWindowState = false
+
+        val wrapperPanel = JPanel(BorderLayout()).apply {
+            val borderSize = RESIZE_HANDLE_SIZE / 2
+            border = EmptyBorder(borderSize, borderSize, borderSize, borderSize)
+            isOpaque = false
+        }
+        contentPane = wrapperPanel
+
+        val mainPanel = JPanel(BorderLayout())
+        wrapperPanel.add(mainPanel, BorderLayout.CENTER)
+
+        // Header, then the hairline loading bar, then one bounded viewport containing the primary
+        // result, its definition, and comparison cards.
+        mainPanel.add(
+            JPanel(BorderLayout()).apply {
+                isOpaque = false
+                add(topPanel, BorderLayout.CENTER)
+                add(loadingBar, BorderLayout.SOUTH)
+            },
+            BorderLayout.NORTH
+        )
+        mainPanel.add(resultsView, BorderLayout.CENTER)
+
+        setupWindowBehavior(topPanel)
+        popup.installTheme(::refreshTheme)
+        updatePinButtonStyle(isPinned)
+    }
+
+    // Render entrypoint
+    override fun render(state: QuickTranslateDialogState) {
+        val wasVisible = isVisible
+        val visibilityChanged = wasVisible != state.isVisible
+
+        if (visibilityChanged) {
+            if (state.isVisible) {
+                currentConfig = state.config
+                wasManuallyMoved = false
+
+                updateContent(state)
+
+                // Nothing to show yet, so nothing is shown. Opening now would put a popup on
+                // screen sized to an empty string — a sliver that then jumps to full size when
+                // the translation lands. The loading indicator covers the wait instead, and the
+                // popup appears once, already the right size.
+                if (state.isLoading && state.translatedText.isBlank()) {
+                    pendingShow = true
+                    return
+                }
+                showNow(state)
+            } else {
+                pendingShow = false
+                hideDialog()
+            }
+            return
+        }
+
+        if (!isVisible) {
+            // A deferred open, now that the result has arrived — or failed, which also deserves
+            // to be shown rather than left waiting forever.
+            if (pendingShow && state.isVisible && (!state.isLoading || state.translatedText.isNotBlank())) {
+                currentConfig = state.config
+                updateContent(state)
+                showNow(state)
+            }
+            return
+        }
+
+        val pinStateChanged = this.isPinned != state.isPinned
+        val retriggered = lastTriggerCount != state.triggerCount
+        lastTriggerCount = state.triggerCount
+
+        updateContent(state)
+
+        if (pinStateChanged) handlePinState(state)
+
+        // Asked for again while already open: refresh in place, come back to full opacity, and
+        // restart the countdown. Re-sized for the new text, since it is a different translation.
+        if (retriggered) {
+            fadeTo(1f, FADE_MS)
+            if (!isResizing && !isDragging) applySize(state.translatedText)
+            popup.noteActivity()
+            toFront()
+        }
+    }
+
+    /** Sizes the popup for the text it is about to show, then puts it on screen. */
+    private fun showNow(state: QuickTranslateDialogState) {
+        pendingShow = false
+        wasManuallyMoved = false
+        lastTriggerCount = state.triggerCount
+        applySize(state.translatedText)
+        applyPosition()
+        showDialog()
+    }
+
+    // Full content sync. Sibling provider completion only refreshes that provider in
+    // place; the popup size is left alone and the result viewport scrolls instead.
+    private fun updateContent(state: QuickTranslateDialogState) {
+        this.isPinned = state.isPinned
+        // Only while something is already on screen: before that the popup is withheld and the
+        // standalone loading indicator covers the wait.
+        loadingBar.isLoading = state.isLoading && isVisible
+        comparisonSizingEnabled = state.comparisonsEnabled
+        renderProviders(state)
+
+        // Guarded: assigning a combo's selection fires its listener, which would ask for another
+        // translation on every render and loop.
+        isRenderingLanguages = true
+        try {
+            sourceLanguageCombo.render(
+                availableLanguages   = state.availableLanguages,
+                selectedLanguage     = state.sourceLanguage,
+                autoDetectedLanguage = state.detectedSourceLanguage,
+                isEnabled            = state.availableLanguages.isNotEmpty()
+            )
+            // A target of Auto means nothing, so it is not offered on that side.
+            val targets = state.availableLanguages.filter { it != LanguageCode.AUTO }
+            targetLanguageCombo.render(
+                availableLanguages   = targets,
+                selectedLanguage     = state.targetLanguage,
+                autoDetectedLanguage = null,
+                isEnabled            = targets.isNotEmpty()
+            )
+        } finally {
+            isRenderingLanguages = false
+        }
+
+        translatorComboBox.render(
+            TranslatorSelectorState(
+                availableTranslators = state.translatorSelectorState.availableTranslators,
+                selectedTranslatorId = state.translatorSelectorState.selectedTranslatorId,
+                isLoading = state.isLoading
+            )
+        )
+
+        pinButton.toolTipText = withShortcut(
+            if (state.isPinned) state.strings.unpinTooltip else state.strings.pinTooltip,
+            KeyEvent.VK_P
+        )
+        copyButton.toolTipText = withShortcut(state.strings.copyTooltip, KeyEvent.VK_C)
+        swapButton.toolTipText = withShortcut(state.strings.swapTooltip, KeyEvent.VK_S)
+        closeButton.toolTipText = state.strings.closeTooltip
+
+        // Becomes a stop button while speech is playing, as it does in the main window. Pressing
+        // Listen a second time used to start another playback over the first, with no way to stop
+        // either of them.
+        val playing = state.isTtsPlaying
+        currentIsTtsPlaying = playing
+        listenButton.icon = iconManager.getIcon(
+            if (playing) Icons.CLOSE else Icons.SPEAK,
+            14,
+            14
+        )
+        listenButton.toolTipText = withShortcut(
+            if (playing) state.strings.stopListeningTooltip else state.strings.listenTooltip,
+            KeyEvent.VK_E
+        )
+
+        listenButton.isEnabled = playing || (state.actionsState.canListen && !state.isLoading)
+        copyButton.isEnabled = state.actionsState.canCopy && !state.isLoading
+    }
+
+    private fun renderProviders(state: QuickTranslateDialogState) {
+        val selectedId = state.translatorSelectorState.selectedTranslatorId
+        val primaryStatus = when {
+            state.translatedText.isNotBlank() -> ProviderStatus.SUCCESS
+            state.isLoading -> ProviderStatus.LOADING
+            else -> ProviderStatus.PLACEHOLDER
+        }
+        val primaryState = TranslationProviderState(
+            serviceId = selectedId ?: "",
+            serviceName = state.primaryProviderInfo?.name ?: state.primaryProviderName,
+            iconPath = state.primaryProviderInfo?.iconPath,
+            role = ProviderRole.PRIMARY,
+            presentation = ProviderPresentation.QUICK,
+            status = primaryStatus,
+            text = state.translatedText,
+            loadingText = state.strings.loadingText,
+            failureText = state.comparisonFailureText,
+            copyLabel = state.comparisonCopyLabel,
+            listenLabel = state.strings.listenTooltip,
+            stopLabel = state.strings.stopListeningTooltip,
+            isTtsPlaying = state.isTtsPlaying,
+            primaryLabel = state.primaryBadge,
+            placeholderTitle = state.comparisonFailureText,
+            definition = state.definition,
+            fontConfig = state.config.font,
+            fallbackFontConfig = state.config.fallbackFont,
+            selectorState = TranslatorSelectorState(
+                availableTranslators = state.translatorSelectorState.availableTranslators,
+                selectedTranslatorId = selectedId,
+                isLoading = state.isLoading
+            ),
+            onCopy = { text -> text.copyToClipboard() },
+            onListen = { onListen() },
+            onStop = { onStopListening() }
+        )
+        val secondaries = state.comparisonResults.map { result ->
+            val info = state.comparisonProviderInfos[result.serviceId]
+            TranslationProviderState(
+                serviceId = result.serviceId,
+                serviceName = info?.name ?: result.serviceName ?: state.comparisonUnavailableText,
+                iconPath = info?.iconPath,
+                role = ProviderRole.SECONDARY,
+                presentation = ProviderPresentation.QUICK,
+                status = when (result.status) {
+                    ComparisonStatus.LOADING -> ProviderStatus.LOADING
+                    ComparisonStatus.SUCCESS -> ProviderStatus.SUCCESS
+                    ComparisonStatus.FAILURE -> ProviderStatus.FAILURE
+                },
+                text = result.text,
+                errorMessage = result.errorMessage,
+                loadingText = state.comparisonLoadingText,
+                failureText = state.comparisonFailureText,
+                copyLabel = state.comparisonCopyLabel,
+                detailsLabel = state.comparisonDetailsLabel,
+                fontConfig = state.config.font,
+                fallbackFontConfig = state.config.fallbackFont,
+                onCopy = { text -> text.copyToClipboard() }
+            )
+        }
+        quickBoard.render(CompareBoardState(primary = primaryState, secondaries = secondaries))
+    }
+
+    private fun handlePinState(state: QuickTranslateDialogState) {
+        this.isPinned = state.isPinned
+        updatePinButtonStyle(state.isPinned)
+
+        if (state.isPinned) {
+            stopIdleHide()
+            fadeTo(1f, FADE_MS)
+        } else {
+            applyTransparency()
+            startIdleHide()
+        }
+    }
+
+    private fun updatePinButtonStyle(pinned: Boolean) {
+        pinButton.isSelected = pinned
+
+        if (pinned) {
+            rootPane.border = BorderFactory.createLineBorder(accentBorderColor, PINNED_BORDER_WIDTH)
+        } else {
+            val coloredBorderWidth = 2
+            val emptyBorderWidth = PINNED_BORDER_WIDTH - coloredBorderWidth
+            rootPane.border = BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(borderColor, coloredBorderWidth),
+                BorderFactory.createEmptyBorder(
+                    emptyBorderWidth,
+                    emptyBorderWidth,
+                    emptyBorderWidth,
+                    emptyBorderWidth
+                )
+            )
+        }
+    }
+
+    private fun applyTransparency() {
+        val transparency = currentConfig?.transparencyPercentage ?: 0
+        val target = (100f - transparency) / 100f
+        fadeTo(target, FADE_MS)
+    }
+
+    /**
+     * Delegated to the shared helper, which also drops a bug that lived only here: the old guard
+     * returned early while a fade was still running, so a fade back to transparency was silently
+     * discarded whenever the mouse entered and left within one animation. The dictionary popup
+     * had this fixed; this one never did.
+     */
+    private fun fadeTo(targetOpacity: Float, durationMs: Int) = popup.fadeTo(targetOpacity, durationMs)
+
+    private fun showDialog() {
+        // apply initial opacity from config (without animation)
+        val transparency = currentConfig?.transparencyPercentage ?: 0
+        opacity = (100f - transparency) / 100f
+
+        // Set before showing: changing focusableWindowState on a window already on screen makes
+        // AWT discard and rebuild the native peer, which flickers and can drop focus.
+        focusableWindowState = true
+        isVisible = true
+        installAwtMouseListener()
+        // Not if the pointer is already inside it -- the popup opens at the cursor, so it often
+        // is, and starting the countdown then hides the popup out from under the reader.
+        if (!isPinned && !popup.isPointerOver) startIdleHide()
+    }
+
+    private fun hideDialog() {
+        if (!isVisible) return
+        stopIdleHide()
+        uninstallAwtMouseListener()
+        isVisible = false
+        focusableWindowState = false
+        onSavePosition(location.toPosition())
+        onSaveSize(size.toSize())
+    }
+
+    private fun startIdleHide() = popup.startIdleHide()
+
+    private fun stopIdleHide() = popup.stopIdleHide()
+
+
+    private fun installAwtMouseListener() = popup.installPointerTracking()
+
+    private fun uninstallAwtMouseListener() = popup.uninstallPointerTracking()
+
+
+    // sizing (reuse measurePane; skip heavy ops during resize)
+    private fun applySize(text: String) {
+        val config = currentConfig ?: return
+        if (!config.autoSizeEnabled) {
+            size = config.lastKnownSize.toDimension()
+            return
+        }
+
+        if (isResizing) {
+            // defer measurement until resize end
+            return
+        }
+
+        // Use the monitor where the mouse cursor currently lives, not where the dialog
+        // happens to be placed — prevents wrong-monitor bounds on multi-monitor setups.
+        val gc = MouseInfo.getPointerInfo()?.device?.defaultConfiguration ?: graphicsConfiguration
+        val screenBounds = gc.bounds
+        // Bounded by a readable line length first and the screen second. A share of the screen
+        // alone stretches one sentence across half a wide monitor, which is hard to read for the
+        // same reason a book is not printed edge to edge.
+        val primaryPane = quickBoard.primaryProviderView.textPaneComponent
+        val maxWidth = PopupSizing.maxTextWidth(
+            measurePane.getFontMetrics(primaryPane.font),
+            screenBounds
+        )
+        val maxHeight = if (comparisonSizingEnabled) {
+            PopupSizing.maxComparisonHeight(screenBounds)
+        } else {
+            PopupSizing.maxHeight(screenBounds)
+        }
+
+        measurePane.font = primaryPane.font
+        if (measurePane.text != text) measurePane.text = text
+        measurePane.size = Dimension(maxWidth, Int.MAX_VALUE)
+
+        val textWidth = measurePane.preferredSize.width + 40
+        val primaryTextHeight = measurePane.preferredSize.height + 30
+        val contentHeight = max(primaryTextHeight, resultsView.preferredSize.height)
+
+        val borderSize = RESIZE_HANDLE_SIZE * 2
+        val finalWidth = (textWidth + borderSize)
+            .coerceAtMost(maxWidth)
+            .coerceAtLeast(minimumSize.width)
+
+        val nonTextHeight = topPanel.preferredSize.height + 20
+        val finalHeight = (contentHeight + nonTextHeight + borderSize)
+            .coerceAtMost(maxHeight)
+            .coerceAtLeast(minimumSize.height)
+
+        if (width != finalWidth || height != finalHeight) {
+            size = Dimension(finalWidth, finalHeight)
+            if (isVisible) revalidate()
+        }
+    }
+
+    private fun applyPosition() {
+        val config = currentConfig ?: return
+        if (wasManuallyMoved) return
+
+        if (config.autoPositionEnabled) {
+            val mouseLocation = MouseInfo.getPointerInfo()?.location ?: run {
+                setLocationRelativeTo(owner)
+                return
+            }
+
+            // Derive screen bounds from the monitor the mouse is on, not the dialog's current
+            // monitor — ensures correct clamping on multi-monitor setups (A-10).
+            val gc = MouseInfo.getPointerInfo()?.device?.defaultConfiguration ?: graphicsConfiguration
+            val screenBounds = gc.bounds
+            val dialogWidth = width
+            val dialogHeight = height
+            val offsetX = 10
+            val offsetY = 10
+
+            var x = mouseLocation.x + offsetX
+            var y = mouseLocation.y + offsetY
+
+            if (x + dialogWidth > screenBounds.x + screenBounds.width) {
+                x = mouseLocation.x - dialogWidth - offsetX
+            }
+
+            if (y + dialogHeight > screenBounds.y + screenBounds.height) {
+                y = mouseLocation.y - dialogHeight - offsetY
+            }
+
+            x = x.coerceAtLeast(screenBounds.x)
+            y = y.coerceAtLeast(screenBounds.y)
+
+            setLocation(x, y)
+        } else {
+            val saved = config.lastKnownPosition
+            if (isPositionReachable(Rectangle(saved.x, saved.y, width, height), connectedScreenBounds())) {
+                location = saved.toPoint()
+            } else {
+                setLocationRelativeTo(owner)
+            }
+        }
+    }
+
+    // Copy feedback: small animation reuse
+    private fun showCopyFeedback() {
+        copyFeedbackTimer?.stop()
+
+        val originalIcon = copyButton.icon
+        val checkIcon = iconManager.getIcon(Icons.CHECK, 13, 13)
+        copyButton.icon = (checkIcon as FlatSVGIcon).applyForegroundColorFilter()
+        copyButton.foreground = UIManager.getColor("Button.successForeground") ?: Color(34, 197, 94)
+
+        copyFeedbackTimer = Timer(COPY_FEEDBACK_DURATION_MS) {
+            copyButton.icon = originalIcon
+            copyButton.foreground = null
+            (it.source as Timer).stop()
+        }.apply {
+            isRepeats = false
+            start()
+        }
+    }
+
+    private fun createTopPanel(): JPanel {
+        pinButton.addActionListener { onPinToggled() }
+        listenButton.addActionListener {
+            if (currentIsTtsPlaying) onStopListening() else onListen()
+        }
+        copyButton.addActionListener {
+            onCopy()
+            showCopyFeedback()
+        }
+        closeButton.addActionListener { onDismiss() }
+
+        val separator = JPanel().apply {
+            border = BorderFactory.createMatteBorder(0, 0, 0, 1, borderColor)
+            dividedPanels += this to { BorderFactory.createMatteBorder(0, 0, 0, 1, borderColor) }
+            preferredSize = Dimension(1, 24)
+            maximumSize = Dimension(1, Int.MAX_VALUE)
+            isOpaque = false
+        }
+
+        val leftPanel = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
+            isOpaque = false
+            add(sourceLanguageCombo)
+            add(swapButton)
+            add(targetLanguageCombo)
+        }
+
+        val rightPanel = JPanel().apply {
+            isOpaque = false
+            layout = BoxLayout(this, BoxLayout.X_AXIS)
+
+            add(pinButton)
+            add(listenButton)
+            add(copyButton)
+
+            add(Box.createRigidArea(Dimension(6, 0)))
+            add(separator)
+            add(Box.createRigidArea(Dimension(6, 0)))
+
+            add(closeButton)
+        }
+
+        val finalPanel = JPanel().apply {
+            isOpaque = false
+            border = BorderFactory.createMatteBorder(0, 0, 1, 0, borderColor)
+            dividedPanels += this to { BorderFactory.createMatteBorder(0, 0, 1, 0, borderColor) }
+        }
+
+        val grid = GridBag(finalPanel)
+
+        val verticalPadding = 4
+
+        grid.fill(GridBagConstraints.BOTH)
+
+            .weightX(1.0)
+            .anchor(GridBagConstraints.WEST)
+            .insets(verticalPadding, 0, verticalPadding, 0)
+            .add(leftPanel)
+
+            .weightX(0.0)
+            .anchor(GridBagConstraints.EAST)
+            .insets(verticalPadding, 0, verticalPadding, 0)
+            .add(rightPanel)
+
+        return finalPanel
+    }
+
+
+    private fun setupWindowBehavior(topPanel: JPanel) {
+        val dragInsets = Insets(RESIZE_HANDLE_SIZE, RESIZE_HANDLE_SIZE, RESIZE_HANDLE_SIZE, RESIZE_HANDLE_SIZE)
+
+        ComponentMover.builder()
+            .destinationComponent(this)
+            .build()
+            .register(topPanel)
+
+        val resizer = ComponentResizer.builder()
+            .dragInsets(dragInsets)
+            .minimumSize(minimumSize)
+            .onResizeStart {
+                // freeze opacity and suspend idle timer
+                isResizing = true
+                stopIdleHide()
+                fadeTo(1f, FADE_MS)
+            }
+            .onResizeEnd {
+                // restore opacity and save size once
+                isResizing = false
+
+                resizeSaveTimer?.stop()
+                resizeSaveTimer = Timer(RESIZE_SAVE_DEBOUNCE_MS) {
+                    onSaveSize(size.toSize())
+                    (it.source as Timer).stop()
+                }.apply { isRepeats = false; start() }
+
+                if (!isPinned) {
+                    applyTransparency()
+                    startIdleHide()
+                }
+            }
+            .build()
+
+        resizer.register(this)
+
+        val dragListener = object : MouseAdapter() {
+            override fun mousePressed(e: MouseEvent) {
+                isDragging = true
+                wasManuallyMoved = true // mark manual move immediately
+                stopIdleHide()
+                autoHideStopForDrag()
+            }
+
+            override fun mouseReleased(e: MouseEvent) {
+                isDragging = false
+                onSavePosition(location.toPosition())
+                if (!isPinned) startIdleHide()
+            }
+        }
+
+        topPanel.addMouseListener(dragListener)
+        topPanel.addMouseMotionListener(dragListener)
+
+        // Also track manual window drag if user drags from edges (to catch non-top-panel moves)
+        addMouseListener(dragListener)
+        addMouseMotionListener(dragListener)
+
+        addWindowFocusListener(object : WindowFocusListener {
+            override fun windowGainedFocus(e: WindowEvent?) {
+                // reset idle when gaining focus
+                if (!isPinned) startIdleHide()
+            }
+
+            override fun windowLostFocus(e: WindowEvent?) {
+                // don't hide immediately on focus loss; start idle hide instead
+                if (!isPinned) startIdleHide()
+            }
+        })
+
+        addWindowListener(object : WindowAdapter() {
+            override fun windowClosing(e: WindowEvent) = onDismiss()
+            override fun windowClosed(e: WindowEvent) {
+                uninstallAwtMouseListener()
+                popup.uninstallTheme()
+            }
+        })
+
+        rootPane.registerKeyboardAction(
+            {
+                if (!isPinned) onDismiss()
+            },
+            KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0),
+            JComponent.WHEN_IN_FOCUSED_WINDOW
+        )
+
+        // Escape was the only key this popup answered to, so every action needed the mouse.
+        //
+        // Registered WHEN_IN_FOCUSED_WINDOW, which Swing consults *after* the focused component's
+        // own bindings. That matters for Ctrl+C: with a selection in the output pane the pane's
+        // own copy wins, and this one only takes over when nothing is selected, which is when
+        // "copy" can only sensibly mean the whole translation.
+        val menuMask = Toolkit.getDefaultToolkit().menuShortcutKeyMaskEx
+        rootPane.registerKeyboardAction(
+            { onCopy(); showCopyFeedback() },
+            KeyStroke.getKeyStroke(KeyEvent.VK_C, menuMask),
+            JComponent.WHEN_IN_FOCUSED_WINDOW
+        )
+        rootPane.registerKeyboardAction(
+            { if (currentIsTtsPlaying) onStopListening() else onListen() },
+            KeyStroke.getKeyStroke(KeyEvent.VK_E, menuMask),
+            JComponent.WHEN_IN_FOCUSED_WINDOW
+        )
+        rootPane.registerKeyboardAction(
+            { onSwapLanguages() },
+            KeyStroke.getKeyStroke(KeyEvent.VK_S, menuMask),
+            JComponent.WHEN_IN_FOCUSED_WINDOW
+        )
+        rootPane.registerKeyboardAction(
+            { onPinToggled() },
+            KeyStroke.getKeyStroke(KeyEvent.VK_P, menuMask),
+            JComponent.WHEN_IN_FOCUSED_WINDOW
+        )
+    }
+
+    /**
+     * Appends a shortcut to a tooltip, in the platform's own notation.
+     *
+     * Shown on the control rather than left to be discovered, since a shortcut nobody knows about
+     * is the same as no shortcut. Built from the KeyStroke so it reads Cmd on macOS without a
+     * second string to keep in step.
+     */
+    private fun withShortcut(tooltip: String, keyCode: Int): String {
+        val stroke = KeyStroke.getKeyStroke(keyCode, Toolkit.getDefaultToolkit().menuShortcutKeyMaskEx)
+        val modifiers = InputEvent.getModifiersExText(stroke.modifiers)
+        val key = KeyEvent.getKeyText(stroke.keyCode)
+        return "$tooltip  ($modifiers+$key)"
+    }
+
+    private fun autoHideStopForDrag() {
+        // used to prevent premature hiding while user drags
+        stopIdleHide()
+        fadeTo(1f, FADE_MS / 2)
+    }
+}

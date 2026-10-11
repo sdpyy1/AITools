@@ -1,0 +1,322 @@
+package com.github.ahatem.qtranslate.ui.swing.shared.theme
+
+import com.formdev.flatlaf.FlatDarkLaf
+import com.formdev.flatlaf.FlatLaf
+import com.formdev.flatlaf.IntelliJTheme
+import com.formdev.flatlaf.extras.FlatAnimatedLafChange
+import com.github.ahatem.qtranslate.api.core.Logger
+import java.io.File
+
+class ThemeManager(
+    appDataDirectory: File,
+    private val logger: Logger,
+    // Where the bundled distribution keeps its theme files, when that differs from the user's own
+    // folder. Themes ship as loose `themes/*.theme.json` files rather than as classpath resources, so
+    // an installed copy finds them here while everything a user adds is read from appDataDirectory.
+    // Null when the two are one folder, as in a portable distribution.
+    installationRoot: File? = null
+) {
+
+    /**
+     * Theme folders to scan, user's own first. A user file wins a name collision with a shipped
+     * one; see [ThemeManager] for why the ids of the two never collide anyway.
+     */
+    private val customThemeDirectories: List<File> = listOfNotNull(
+        File(appDataDirectory, "themes").also { it.mkdirs() },
+        installationRoot?.takeIf { it != appDataDirectory }?.let { File(it, "themes") }
+    )
+
+    // @formatter:off
+    private val builtInThemes: List<Theme> = listOf(
+        // ── Custom bundled themes ─────────────────────────────────────────────
+        createCustomTheme("qtranslate_light",    "QTranslate Light",     false, "themes/qtranslate-light.theme.json"),
+        createCustomTheme("qtranslate_dark",     "QTranslate Dark",      true,  "themes/qtranslate-dark.theme.json"),
+        createCustomTheme("resharper_dark",      "ReSharper Dark",       true,  "themes/ReSharperDark.theme.json"),
+        createCustomTheme("resharper_light",     "ReSharper Light",      false, "themes/ReSharperLight.theme.json"),
+        createCustomTheme("xcode_dark",          "Xcode Dark",           true,  "themes/XcodeDark.theme.json"),
+        createCustomTheme("modern_black",        "VSCode Modern Black",  true,  "themes/vscode_dark_modern.theme.json"),
+        createCustomTheme("github_dark",         "GitHub Dark",          true,  "themes/github-dark.theme.json"),
+        createCustomTheme("github_dark_dimmed",  "GitHub Dark Dimmed",   true,  "themes/github-dark-dimmed.theme.json"),
+        createCustomTheme("godot_dark",          "Godot Dark",           true,  "themes/godot_theme.theme.json"),
+        createCustomTheme("kintsugi_dark",       "Kintsugi Dark",        true,  "themes/kintsugi.theme.json"),
+        createCustomTheme("espresso_light",      "Espresso Light",       false, "themes/espresso_light.theme.json"),
+        createCustomTheme("cool_dark",           "Cool Dark",            true,  "themes/cool_dark.theme.json"),
+        createCustomTheme("vitesse_black",       "Vitesse Black",        true,  "themes/vitesse.black.theme.json"),
+        createCustomTheme("vitesse_dark",        "Vitesse Dark",         true,  "themes/vitesse.dark.theme.json"),
+        createCustomTheme("vitesse_dark_soft",   "Vitesse Dark Soft",    true,  "themes/vitesse.dark.soft.theme.json"),
+        createCustomTheme("vitesse_light",       "Vitesse Light",        false, "themes/vitesse.light.theme.json"),
+        createCustomTheme("vitesse_light_soft",  "Vitesse Light Soft",   false, "themes/vitesse.light.soft.theme.json"),
+
+        // ── FlatLaf IntelliJ themes ───────────────────────────────────────────
+        createBuiltInTheme("one_dark",           "One Dark",              true,  "com.formdev.flatlaf.intellijthemes.FlatOneDarkIJTheme"),
+        createBuiltInTheme("dark_purple",        "Dark Purple",           true,  "com.formdev.flatlaf.intellijthemes.FlatDarkPurpleIJTheme"),
+        createBuiltInTheme("hiberbee_dark",      "Hiberbee Dark",        true,  "com.formdev.flatlaf.intellijthemes.FlatHiberbeeDarkIJTheme"),
+        createBuiltInTheme("material_oceanic",   "Material Oceanic",     true,  "com.formdev.flatlaf.intellijthemes.materialthemeuilite.FlatMTMaterialOceanicIJTheme"),
+        createBuiltInTheme("vuesion_dark",       "Vuesion Dark",         true,  "com.formdev.flatlaf.intellijthemes.FlatVuesionIJTheme"),
+        createBuiltInTheme("solarized_dark",     "Solarized Dark",       true,  "com.formdev.flatlaf.intellijthemes.FlatSolarizedDarkIJTheme"),
+        createBuiltInTheme("mac_dark",           "macOS Dark",           true,  "com.formdev.flatlaf.themes.FlatMacDarkLaf"),
+        createBuiltInTheme("mac_light",          "macOS Light",          false, "com.formdev.flatlaf.themes.FlatMacLightLaf"),
+        createBuiltInTheme("gray_light",         "Gray Light",           false, "com.formdev.flatlaf.intellijthemes.FlatGrayIJTheme"),
+        createBuiltInTheme("solarized_light",    "Solarized Light",      false, "com.formdev.flatlaf.intellijthemes.FlatSolarizedLightIJTheme"),
+        createBuiltInTheme("nord_dark",          "Nord Dark",            true,  "com.formdev.flatlaf.intellijthemes.FlatNordIJTheme"),
+
+        // ── FlatLaf core themes (fallback-safe) ───────────────────────────────
+        createBuiltInTheme("flat_light",         "Flat Light",           false, "com.formdev.flatlaf.FlatLightLaf"),
+        createBuiltInTheme("flat_dark",          "Flat Dark",            true,  "com.formdev.flatlaf.FlatDarkLaf"),
+        createBuiltInTheme("intellij",           "IntelliJ",             false, "com.formdev.flatlaf.FlatIntelliJLaf"),
+        createBuiltInTheme("darcula",            "Darcula",              true,  "com.formdev.flatlaf.FlatDarculaLaf"),
+    )
+    // @formatter:on
+
+    private var allThemes: List<Theme> = emptyList()
+    private val themeCache = mutableMapOf<String, Theme>()
+
+    private var currentTheme: Theme? = null
+
+    val defaultDarkThemeId  = "custom:qtranslate_dark"
+    val defaultLightThemeId = "custom:qtranslate_light"
+
+    private val emergencyDarkThemeId  = "builtin:darcula"
+    private val emergencyLightThemeId = "builtin:intellij"
+
+    val systemDefaultThemeId: String
+        get() = if (isSystemInDarkMode()) platformDefaultDarkThemeId() else platformDefaultLightThemeId()
+
+    init {
+        reload()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Public API
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    fun getAvailableThemes(): List<Theme> = allThemes
+
+    fun getDarkThemes(): List<Theme> = allThemes.filter { it.isDark }
+    fun getLightThemes(): List<Theme> = allThemes.filter { !it.isDark }
+
+    fun findThemeById(id: String?): Theme {
+        val requestedId = if (id == OS_DEFAULT_THEME_ID) systemDefaultThemeId else id
+        val resolvedId = requestedId?.let { savedId ->
+            legacyExternalThemeIds[savedId]
+                ?.takeIf(themeCache::containsKey)
+                ?: savedId
+        }
+
+        // Fast path – cache hit
+        if (resolvedId != null && themeCache.containsKey(resolvedId)) return themeCache[resolvedId]!!
+
+        // Slow path – linear search
+        val theme = allThemes.find { it.id == resolvedId }
+        if (theme != null) {
+            themeCache[resolvedId!!] = theme
+            return theme
+        }
+
+        // Fallback chain
+        logger.warn("Theme not found: '$resolvedId' – using fallback")
+        return findThemeById(
+            when {
+                resolvedId != null && resolvedId.contains("light", ignoreCase = true) -> defaultLightThemeId
+                else -> defaultDarkThemeId
+            }
+        )
+    }
+
+    // ── Apply (runtime) ─────────────────────────────────────────────────────
+
+    fun applyTheme(theme: Theme, animate: Boolean = true) {
+        if (currentTheme?.id == theme.id) {
+            logger.debug("Theme already active: ${theme.name}")
+            return
+        }
+
+        logger.info("Applying theme: ${theme.name}  (${theme.id})")
+
+        val snapshot = if (animate) {
+            try {
+                FlatAnimatedLafChange.showSnapshot()
+            } catch (_: Exception) {
+                null
+            }
+        } else null
+
+        try {
+            theme.apply()
+            FlatLaf.updateUI()
+            snapshot?.let { FlatAnimatedLafChange.hideSnapshotWithAnimation() }
+
+            currentTheme = theme
+            logger.info("Theme applied: ${theme.name}")
+        } catch (e: Exception) {
+            logger.error("Failed to apply theme '${theme.name}'", e)
+            safeHideAnimation(snapshot)
+            fallbackToDefault(theme.isDark)
+        }
+    }
+
+    // ── Apply (startup) ────────────────────────────────────────────────────
+
+    fun applyThemeForStartup(theme: Theme) {
+        logger.info("Startup theme: ${theme.name}  (${theme.id})")
+        try {
+            theme.apply()
+            currentTheme = theme
+        } catch (e: Exception) {
+            logger.error("Startup theme failed: ${theme.name}", e)
+            fallbackToDefault(theme.isDark)
+        }
+    }
+
+    // ── Convenience ─────────────────────────────────────────────────────────
+
+    fun applySystemTheme() = applyTheme(findThemeById(systemDefaultThemeId))
+
+    fun reload() {
+        themeCache.clear()
+        currentTheme = null
+        allThemes = builtInThemes + discoverExternalThemes()
+        allThemes.forEach { themeCache[it.id] = it }
+        logger.info("Loaded ${allThemes.size} themes (dark=${getDarkThemes().size}, light=${getLightThemes().size})")
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // External theme discovery
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Themes found on disk, from the user's own folder first and the installation's after it.
+     *
+     * De-duplicated by id keeping the first found, and [customThemeDirectories] is in precedence
+     * order with the user's own folder first, so a user's file wins over a shipped one of the same
+     * name instead of appearing twice in the list.
+     */
+    fun discoverExternalThemes(): List<Theme> {
+        val byId = LinkedHashMap<String, Theme>()
+        customThemeDirectories.forEach { directory ->
+            if (!directory.isDirectory) return@forEach
+            directory
+                .listFiles { f -> f.isFile && f.extension == "json" && f.name.contains("theme", ignoreCase = true) }
+                ?.forEach { file -> loadExternalTheme(file)?.let { byId.putIfAbsent(it.id, it) } }
+        }
+        return byId.values.toList()
+    }
+
+    private fun loadExternalTheme(file: File): Theme? = try {
+        val baseName = file.nameWithoutExtension
+            .replace(".theme", "")
+            .replace("_", " ")
+            .replaceFirstChar { it.uppercase() }
+
+        // Peek at the theme to get its real name + dark flag
+        val laf = IntelliJTheme.createLaf(file.inputStream())
+
+        Theme(
+            id = "external:${file.nameWithoutExtension.lowercase().replace(" ", "_")}",
+            name = laf.name ?: baseName,
+            isDark = laf.isDark,
+            apply = {
+                file.inputStream().use { stream ->
+                    FlatLaf.setup(IntelliJTheme.createLaf(stream))
+                }
+            }
+        )
+    } catch (e: Exception) {
+        logger.error("Failed to load external theme: ${file.name}", e)
+        null
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Internal helpers
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private fun fallbackToDefault(isDark: Boolean) {
+        val fallbackId = if (isDark) defaultDarkThemeId else defaultLightThemeId
+        logger.warn("Falling back to: $fallbackId")
+        try {
+            val fallback = findThemeById(fallbackId)
+            fallback.apply()
+            FlatLaf.updateUI()
+            currentTheme = fallback
+        } catch (e: Exception) {
+            logger.error("Default theme fallback failed", e)
+            fallbackToCoreTheme(isDark)
+        }
+    }
+
+    private fun fallbackToCoreTheme(isDark: Boolean) {
+        val fallbackId = if (isDark) emergencyDarkThemeId else emergencyLightThemeId
+        try {
+            val fallback = findThemeById(fallbackId)
+            fallback.apply()
+            FlatLaf.updateUI()
+            currentTheme = fallback
+        } catch (e: Exception) {
+            logger.error("CRITICAL: core theme fallback also failed", e)
+            FlatDarkLaf.setup()
+            FlatLaf.updateUI()
+        }
+    }
+
+    private fun safeHideAnimation(snapshot: Any?) {
+        if (snapshot == null) return
+        try {
+            FlatAnimatedLafChange.hideSnapshotWithAnimation()
+        } catch (_: Exception) {
+        }
+    }
+
+    companion object {
+        /** Sentinel theme ID that resolves to the OS-preferred dark/light theme at apply time. */
+        const val OS_DEFAULT_THEME_ID = "os_default"
+
+        /** Keeps theme selections from releases where these files were embedded in the JAR. */
+        private val legacyExternalThemeIds = mapOf(
+            "custom:salmon_light" to "external:salmon.theme",
+            "custom:clean_sheet" to "external:clean_sheet.theme"
+        )
+
+        private val os: String = System.getProperty("os.name", "").lowercase()
+
+        fun isMacOs():     Boolean = os.contains("mac")
+        fun isWindowsOs(): Boolean = os.contains("win")
+
+        /**
+         * Platform-aware dark theme default:
+         * All platforms use the branded QTranslate dark theme by default.
+         */
+        fun platformDefaultDarkThemeId(): String = "custom:qtranslate_dark"
+
+        /**
+         * Platform-aware light theme default:
+         * All platforms use the branded QTranslate light theme by default.
+         */
+        fun platformDefaultLightThemeId(): String = "custom:qtranslate_light"
+
+        fun isSystemInDarkMode(): Boolean = try {
+            when {
+                isWindowsOs() -> {
+                    // Read Windows registry
+                    val proc = ProcessBuilder(
+                        "reg", "query",
+                        "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                        "/v", "AppsUseLightTheme"
+                    )
+                        .redirectErrorStream(true).start()
+                    !proc.inputStream.bufferedReader().readText().contains("0x1")
+                }
+
+                isMacOs() -> {
+                    val proc = ProcessBuilder("defaults", "read", "-g", "AppleInterfaceStyle")
+                        .redirectErrorStream(true).start()
+                    proc.inputStream.bufferedReader().readText().trim() == "Dark"
+                }
+
+                else -> false // Linux: dark-mode detection skipped for simplicity
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+}

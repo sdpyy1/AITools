@@ -1,0 +1,281 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # The native helpers are Swift, so they can only be built on macOS, while the artifacts that need them
+  # are packaged on Windows and Linux. Building it once here and passing the binary on is what lets
+  # the released ZIP and plugin JARs carry a working macOS backend.
+  macos-helper:
+    name: Build macOS Vision helper
+    runs-on: macos-14
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      # Produces one universal arm64 + x86_64 binary, so it serves Apple Silicon and Intel alike.
+      - name: Build universal macOS helpers
+        run: ./gradlew :plugins:system-services:buildMacVisionHelper :plugins:system-services:buildMacSpellHelper --no-daemon
+
+      - name: Upload Vision helper
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-vision-ocr
+          path: plugins/system-services/build/generated/mac-helper-build/vision_ocr
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload spell helper
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-system-spell
+          path: plugins/system-services/build/generated/mac-spell-build/system_spell
+          if-no-files-found: error
+          retention-days: 7
+
+  windows-package:
+    name: Build Windows executable
+    runs-on: windows-latest
+    needs: macos-helper
+    timeout-minutes: 55
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download macOS Vision helper
+        uses: actions/download-artifact@v8
+        with:
+          name: macos-vision-ocr
+          path: macos-helper
+
+      - name: Download macOS spell helper
+        uses: actions/download-artifact@v8
+        with:
+          name: macos-system-spell
+          path: macos-helper
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      # The runner image ships WiX 3.14, which jpackage needs for --type msi, but does not
+      # put its bin directory on PATH, and jpackage discovers candle.exe/light.exe via PATH.
+      - name: Add WiX to PATH
+        shell: pwsh
+        run: |
+          $wixBin = Join-Path $env:WIX 'bin'
+          if (-not (Test-Path -LiteralPath (Join-Path $wixBin 'light.exe') -PathType Leaf)) { throw "WiX toolset not found at $wixBin" }
+          Add-Content $env:GITHUB_PATH $wixBin
+
+      - name: Extract version
+        id: version
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Verify tag and runtime version identity
+        shell: pwsh
+        run: ./gradlew validateReleaseVersion "-PreleaseVersion=${{ steps.version.outputs.version }}" --no-daemon
+
+      - name: Build full distribution
+        shell: pwsh
+        # The property must be quoted: PowerShell otherwise splits the argument at the
+        # first dot, passing Gradle a bogus ".3.0" task name and failing the build.
+        # Stages the macOS binary the previous job built, which this runner cannot compile itself.
+        run: ./gradlew assemblePortable "-PreleaseVersion=${{ steps.version.outputs.version }}" "-PmacVisionHelper=macos-helper/vision_ocr" "-PmacSpellHelper=macos-helper/system_spell" --no-daemon
+        env:
+          APP_VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Assemble portable Windows app image
+        shell: pwsh
+        run: ./.github/scripts/package-windows.ps1 -Version "${{ steps.version.outputs.version }}" -PortableArchive "build/release/QTranslate-${{ steps.version.outputs.version }}.zip" -OutputDirectory windows-candidate
+
+      - name: Verify bundled runtime and packaged launcher
+        shell: pwsh
+        run: ./.github/scripts/verify-windows-package.ps1 -Version "${{ steps.version.outputs.version }}" -PackageDirectory windows-candidate
+
+      - name: Verify Windows installer lifecycle
+        shell: pwsh
+        run: ./.github/scripts/verify-windows-installer.ps1 -Version "${{ steps.version.outputs.version }}" -PackageDirectory windows-candidate
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v7
+        with:
+          name: qtranslate-windows-x64
+          path: windows-candidate/QTranslate-${{ steps.version.outputs.version }}-windows-x64.zip
+          if-no-files-found: error
+
+      # The unsigned MSI stays an internal Actions artifact on tag builds too. It is not added
+      # to the GitHub Release: public installer publication waits for Authenticode signing (D3).
+      - name: Upload Windows MSI candidate
+        uses: actions/upload-artifact@v7
+        with:
+          name: qtranslate-windows-msi-candidate
+          path: windows-candidate/QTranslate-${{ steps.version.outputs.version }}-windows-x64.msi
+          if-no-files-found: error
+
+  release:
+    name: Build & Publish Release
+    runs-on: ubuntu-latest
+    needs: [windows-package]
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download macOS Vision helper
+        uses: actions/download-artifact@v8
+        with:
+          name: macos-vision-ocr
+          path: macos-helper
+
+      - name: Download macOS spell helper
+        uses: actions/download-artifact@v8
+        with:
+          name: macos-system-spell
+          path: macos-helper
+
+      # The individual plugin JARs are published from this job, so they need the macOS helper too.
+      - name: Build release variants
+        run: ./gradlew assembleReleaseVariants "-PreleaseVersion=${{ steps.version.outputs.version }}" "-PmacVisionHelper=macos-helper/vision_ocr" "-PmacSpellHelper=macos-helper/system_spell" --no-daemon
+        env:
+          APP_VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Download Windows package
+        uses: actions/download-artifact@v8
+        with:
+          name: qtranslate-windows-x64
+          path: build/release
+
+      - name: Add Windows checksum
+        run: |
+          cd build/release
+          sha256sum "QTranslate-${{ steps.version.outputs.version }}-windows-x64.zip" >> SHA256SUMS.txt
+
+      - name: Verify release inventory and checksums before publishing
+        run: ./gradlew verifyReleaseArtifacts "-PreleaseVersion=${{ steps.version.outputs.version }}" -PrequireWindowsArtifact=true -PrequireMacHelpers=true --no-daemon
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+
+          if [ -z "$PREV_TAG" ]; then
+            RANGE="HEAD"
+          else
+            RANGE="$PREV_TAG..HEAD"
+          fi
+
+          # Categorize commits by Conventional Commit type
+          FEATURES=$(git log --pretty=format:"%s" $RANGE | grep -E "^feat(\(.+\))?:" | sed 's/^feat[^:]*: /- /' || true)
+          FIXES=$(git log --pretty=format:"%s" $RANGE | grep -E "^fix(\(.+\))?:" | sed 's/^fix[^:]*: /- /' || true)
+          REFACTORS=$(git log --pretty=format:"%s" $RANGE | grep -E "^refactor(\(.+\))?:" | sed 's/^refactor[^:]*: /- /' || true)
+          DOCS=$(git log --pretty=format:"%s" $RANGE | grep -E "^docs(\(.+\))?:" | sed 's/^docs[^:]*: /- /' || true)
+          CHORES=$(git log --pretty=format:"%s" $RANGE | grep -E "^(chore|ci|build)(\(.+\))?:" | sed 's/^[^:]*: /- /' || true)
+          OTHER=$(git log --pretty=format:"%s" $RANGE | grep -vE "^(feat|fix|refactor|docs|chore|ci|build)(\(.+\))?:" | sed 's/^/- /' || true)
+
+          # Build categorized log
+          LOG=""
+          [ -n "$FEATURES" ]  && LOG="${LOG}### New features\n${FEATURES}\n\n"
+          [ -n "$FIXES" ]     && LOG="${LOG}### Bug fixes\n${FIXES}\n\n"
+          [ -n "$REFACTORS" ] && LOG="${LOG}### Improvements\n${REFACTORS}\n\n"
+          [ -n "$DOCS" ]      && LOG="${LOG}### Documentation\n${DOCS}\n\n"
+          [ -n "$CHORES" ]    && LOG="${LOG}### Maintenance\n${CHORES}\n\n"
+          [ -n "$OTHER" ]     && LOG="${LOG}### Other\n${OTHER}\n\n"
+
+          # Fall back to flat log if no conventional commits found
+          if [ -z "$LOG" ]; then
+            LOG=$(git log --pretty=format:"- %s" $RANGE)
+          fi
+
+          echo "log<<EOF" >> "$GITHUB_OUTPUT"
+          printf "%b" "$LOG" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: QTranslate ${{ steps.version.outputs.version }}
+          body: |
+            ## What's changed
+
+            ${{ steps.changelog.outputs.log }}
+
+            ---
+
+            **Full changelog:** https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md
+
+            ## Downloads
+
+            | Download | Who it is for | Java needed |
+            |---|---|---|
+            | **[⬇ Windows (.exe)](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/QTranslate-${{ steps.version.outputs.version }}-windows-x64.zip)** | **Start here on Windows.** Extract and run `QTranslate.exe`. | No — runtime included |
+            | **[⬇ Portable (all platforms)](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/QTranslate-${{ steps.version.outputs.version }}.zip)** | macOS, Linux, or Windows without an installer. Extract and run `QTranslate.jar`. | Java 17+ |
+            | **[⬇ App only (.jar)](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/QTranslate-App-${{ steps.version.outputs.version }}.jar)** | No plugins. For custom setups and plugin development. | Java 17+ |
+
+            The portable ZIP already contains every bundled plugin. The individual
+            plugin JARs in the assets below are only needed to add or update a single
+            plugin in an existing installation — most users can ignore them.
+
+            ## Verification
+
+            Optional. Download [SHA256SUMS.txt](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/SHA256SUMS.txt)
+            into the same folder as your download and run:
+            ```
+            sha256sum -c SHA256SUMS.txt
+            ```
+
+          files: |
+            build/release/QTranslate-App-${{ steps.version.outputs.version }}.jar
+            build/release/QTranslate-${{ steps.version.outputs.version }}.zip
+            build/release/QTranslate-${{ steps.version.outputs.version }}-windows-x64.zip
+            build/release/plugins/*.jar
+            build/release/release-metadata.json
+            build/release/SIZE_REPORT.md
+            build/release/SHA256SUMS.txt
+          prerelease: ${{ contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') || contains(github.ref_name, '-rc') }}
+          draft: false

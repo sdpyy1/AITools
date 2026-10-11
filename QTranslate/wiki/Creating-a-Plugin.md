@@ -1,0 +1,628 @@
+# Creating a Plugin
+
+Plugins add translation engines, OCR, TTS, spell checkers, or dictionaries to QTranslate — without touching the app. You write a few classes, build a fat JAR, install it through the UI. That's the whole process.
+
+---
+
+## Before you start — read the source
+
+The bundled plugins are better documentation than this guide. Open them before writing a single line:
+
+| Plugin | What it shows |
+|--------|--------------|
+| [`plugins/google-services/`](../plugins/google-services/src/main/kotlin) | API keys with `@field:Setting`, dynamic language lists, multiple services in one plugin |
+| [`plugins/bing-services/`](../plugins/bing-services/src/main/kotlin) | Token auth, chunking long text, static language map |
+| [`plugins/common/`](../plugins/common/src/main/kotlin) | HTTP client, JSON parsing, language mapper — copy these freely into your own plugin |
+
+Start with `GooglePlugin.kt` → `GoogleTranslatorService.kt`. That covers 90% of what you need.
+
+---
+
+## What a plugin can provide
+
+A single JAR can include any combination of these:
+
+| Interface | Does |
+|-----------|------|
+| `Translator` | Translates text from one language to another |
+| `TextToSpeech` | Converts text to audio |
+| `OCR` | Extracts text from an image |
+| `SpellChecker` | Returns spelling corrections |
+| `Dictionary` | Definitions, synonyms, examples |
+| `Summarizer` | Condenses text into a shorter form, configurable length |
+| `Rewriter` | Rewrites text in a different style |
+| `ImageSearch` | Finds reference images for a term |
+
+**Implementing the interface is how a service is offered.** Each one corresponds to a
+`ServiceRole`, and the application works out which roles a service holds by asking whether it
+implements the matching interface. There is nothing to declare, so there is nothing that can
+disagree with your code.
+
+One service may implement several. A service that is both a `Translator` and a `Dictionary`
+appears in both pickers and can be turned off in one without losing the other. Splitting the work
+across separate service objects is equally valid, and is what most plugins here do.
+
+Optional behaviour is different from a role. `VoiceSupport`, `BatchTranslator` and
+`BilingualDictionary` change *how* a service does its job rather than what it is for, so the user
+never selects them; the application simply checks for them and uses them when present.
+
+---
+
+## Project structure
+
+```
+my-plugin/
+├── build.gradle.kts
+├── settings.gradle.kts
+└── src/main/
+    ├── kotlin/com/example/myplugin/
+    │   ├── MyPlugin.kt
+    │   └── MyTranslatorService.kt
+    └── resources/
+        ├── plugin.json
+        ├── assets/icon.svg
+        └── META-INF/services/
+            └── com.github.ahatem.qtranslate.api.plugin.Plugin
+```
+
+---
+
+## Step 1 — Build files
+
+**`settings.gradle.kts`**
+
+```kotlin
+rootProject.name = "my-plugin"
+
+dependencyResolutionManagement {
+    repositories {
+        mavenCentral()
+        maven("https://jitpack.io")  // QTranslate API is published here
+    }
+}
+```
+
+**`build.gradle.kts`**
+
+```kotlin
+plugins {
+    kotlin("jvm") version "2.4.10"
+}
+
+group   = "com.example"
+version = "1.0.0"
+
+dependencies {
+    // compileOnly — available at compile time, NOT bundled in your JAR.
+    // QTranslate provides this at runtime. Never use "implementation" here —
+    // it causes classloader conflicts and bloats your JAR.
+    compileOnly("com.github.ahatem:qtranslate-api:2.1.0")
+
+    // Your own dependencies go as "implementation" — they ARE bundled
+    implementation("io.ktor:ktor-client-core:3.5.2")
+    implementation("io.ktor:ktor-client-cio:3.5.2")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+}
+
+// Fat JAR — bundles all your "implementation" dependencies into one installable file
+tasks.jar {
+    from(configurations.runtimeClasspath.get().map {
+        if (it.isDirectory) it else zipTree(it)
+    })
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+```
+
+> **Which API version?** Use the API version, not the app release version — they are independent. Check [`ApiVersion.kt`](../api/src/main/kotlin/com/github/ahatem/qtranslate/api/core/ApiVersion.kt) for the current value. During development before any tagged release exists, you can use a full commit hash instead (e.g. `abc1234`).
+
+---
+
+## Step 2 — The Plugin class
+
+Every plugin has exactly one `Plugin` class. It declares the plugin's identity and returns its services.
+
+**Without configuration:**
+
+```kotlin
+package com.example.myplugin
+
+import com.github.ahatem.qtranslate.api.plugin.*
+
+class MyPlugin : Plugin<PluginSettings.None> {
+    override val id          = "com.example.my-plugin"  // permanent — never change after publishing
+    override val name        = "My Plugin"
+    override val version     = "1.0.0"
+    override val description = "Translates using the Example API."
+    override val icon        = "assets/icon.svg"
+
+    override fun getSettings(): PluginSettings.None = PluginSettings.None
+
+    override fun getServices(): List<Service> = listOf(
+        MyTranslatorService()
+    )
+
+    override suspend fun initialize(context: PluginContext): Result<Unit, ServiceError> {
+        // context.logger  — write to the app log
+        // context.scope   — coroutine scope tied to plugin lifecycle; cancelled on disable
+        // context.settings — typed per-plugin storage, survives restarts
+        // context.secrets  — the same, for API keys and tokens
+        return Ok(Unit)
+    }
+}
+```
+
+**Full lifecycle** — `initialize()` is the only method you must implement. Override the others when you need them:
+
+```kotlin
+class MyPlugin : Plugin<PluginSettings.None> {
+    // supportsMultipleInstances defaults to false — override it to let a user
+    // install this plugin more than once, each with its own settings and credentials
+    // (e.g. one instance per account, or one per configured endpoint).
+    override val supportsMultipleInstances = true
+
+    override suspend fun initialize(context: PluginContext): Result<Unit, ServiceError> {
+        // one-time setup: HTTP clients, native libraries
+        return Ok(Unit)
+    }
+
+    override suspend fun onEnable(): Result<Unit, ServiceError> {
+        // called after initialize succeeds, and again on every re-enable
+        return Ok(Unit)
+    }
+
+    override suspend fun onDisable() {
+        // release resources; context.scope is cancelled right after this returns
+    }
+
+    override suspend fun shutdown() {
+        // once, on app close, for final irreversible cleanup
+    }
+
+    // onSettingsChanged() is never called when getSettings() returns PluginSettings.None —
+    // override it on a Plugin<MySettings> instead, to validate and apply each save.
+
+    override fun getServices() = listOf(MyTranslatorService())
+    override fun getSettings() = PluginSettings.None
+}
+```
+
+**With API key or settings:**
+
+```kotlin
+import com.github.ahatem.qtranslate.api.plugin.PluginSettings
+import com.github.ahatem.qtranslate.api.settings.*
+
+@SettingGroups(
+    SettingGroup(key = "auth",     title = "Authentication",  order = 10),
+    SettingGroup(key = "advanced", title = "Advanced Options", order = 20,
+                 collapsible = true, defaultCollapsed = true)
+)
+class MySettings : PluginSettings.Configurable() {
+
+    @field:Setting(
+        label       = "API Key",
+        description = "Your key from example.com/developers",
+        type        = SettingType.PASSWORD,
+        isRequired  = true,
+        group       = "auth",
+        order       = 10
+    )
+    var apiKey: String = ""
+
+    @field:Setting(
+        label        = "Region",
+        type         = SettingType.DROPDOWN,
+        options      = "us-east,us-west,eu-central",
+        defaultValue = "us-east",
+        group        = "auth",
+        order        = 20
+    )
+    var region: String = "us-east"
+
+    @field:Setting(
+        label        = "Request timeout (s)",
+        type         = SettingType.SLIDER,
+        minValue     = 5.0,
+        maxValue     = 60.0,
+        step         = 5.0,
+        defaultValue = "30",
+        group        = "advanced",
+        order        = 10
+    )
+    var timeoutSeconds: Double = 30.0
+
+    @field:Setting(
+        label        = "Enable response cache",
+        type         = SettingType.BOOLEAN,
+        defaultValue = "false",
+        group        = "advanced",
+        order        = 20
+    )
+    var cacheEnabled: Boolean = false
+
+    @PluginAction(label = "Test Connection", group = "auth", tooltip = "Verifies the API key is valid.")
+    suspend fun testConnection(): String? {
+        if (apiKey.isBlank()) return "No API key configured."
+        // Make a lightweight test request here
+        return "Connected successfully."
+    }
+}
+
+class MyPlugin : Plugin<MySettings> {
+    private val settings = MySettings()
+
+    override val id      = "com.example.my-plugin"
+    override val name    = "My Plugin"
+    override val version = "1.0.0"
+
+    override fun getSettings() = settings
+    override fun getServices() = listOf(MyTranslatorService(settings))
+
+    override suspend fun initialize(context: PluginContext): Result<Unit, ServiceError> {
+        return Ok(Unit)
+    }
+}
+```
+
+`@field:Setting` on a `var` property is enough — QTranslate builds the settings dialog automatically. No UI code needed.
+
+**Setting types** (`SettingType`):
+
+| Type | Renders as |
+|------|-----------|
+| `TEXT` | Single-line text field (default) |
+| `PASSWORD` | Masked text field |
+| `TEXTAREA` | Multi-line text area |
+| `BOOLEAN` | Checkbox |
+| `DROPDOWN` | Drop-down from `options` list |
+| `NUMBER` | Numeric spinner |
+| `SLIDER` | Slider with `minValue`/`maxValue`/`step` |
+| `FILE_PATH` | Text field + file chooser button |
+| `DIRECTORY_PATH` | Text field + directory chooser button |
+| `CUSTOM_PANEL` | A full `JComponent` your settings class builds itself, via a no-arg factory method named in `Setting.actionMethod`. Last-resort escape hatch for inputs no other type can express |
+
+**Grouping** — add `@SettingGroups(...)` to the settings class and reference the group `key` in each `@field:Setting`. Groups with `collapsible = true` can be collapsed by the user.
+
+**Actions** — annotate a `suspend fun methodName(): String?` in your settings class with `@PluginAction`. QTranslate renders it as a button in the group's action strip. Return a non-null string to show a result message.
+
+**Conditional visibility** — use `showIf = "propertyName=value"` to show a field only when another field has a specific value.
+
+---
+
+## Step 3 — Implement a service
+
+### Translator
+
+```kotlin
+import com.github.ahatem.qtranslate.api.plugin.ServiceError
+import com.github.ahatem.qtranslate.api.translator.*
+import com.github.michaelbull.result.Result
+import com.github.michaelbull.result.Ok   // Ok(...) and Err(...) are top-level functions,
+import com.github.michaelbull.result.Err  // not types — import them like this
+import java.io.IOException
+
+class MyTranslatorService(
+    private val settings: MySettings
+) : Translator {
+    // Unique within this plugin, not globally. The application qualifies it with the plugin id
+    // and the instance the user created to build the identifier it stores, so never construct or
+    // persist a service id yourself. Keep the key stable: it is part of that identifier, and
+    // changing it silently resets the user's selection.
+    override val key                = "translator"
+    override val name               = "My Translator"
+    override val version            = "1.0.0"
+    override val iconPath           = "assets/icon.svg"
+    override val supportedLanguages = SupportedLanguages.All
+    // SupportedLanguages.Specific(setOf(LanguageCode("en"), LanguageCode("ar")))
+    // SupportedLanguages.Dynamic  → override fetchSupportedLanguages() below
+
+    override suspend fun translate(
+        request: TranslationRequest
+    ): Result<TranslationResponse, ServiceError> {
+
+        if (settings.apiKey.isBlank())
+            return Err(ServiceError.ConfigurationError("API key not configured"))
+
+        return try {
+            val text = callMyApi(
+                text   = request.text,
+                from   = request.sourceLanguage.tag,
+                to     = request.targetLanguage.tag,
+                apiKey = settings.apiKey
+            )
+            Ok(TranslationResponse(translatedText = text))
+        } catch (e: IOException) {
+            Err(ServiceError.NetworkError("Request failed: ${e.message}", e))
+        } catch (e: Exception) {
+            Err(ServiceError.UnknownError("Unexpected error: ${e.message}", e))
+        }
+    }
+
+    // Only implement this when supportedLanguages = SupportedLanguages.Dynamic
+    override suspend fun fetchSupportedLanguages(): Result<Set<LanguageCode>, ServiceError> {
+        return try {
+            val codes = fetchLanguagesFromApi(settings.apiKey)
+            Ok(codes.map { LanguageCode(it) }.toSet())
+        } catch (e: Exception) {
+            Err(ServiceError.NetworkError("Could not fetch language list", e))
+        }
+    }
+}
+```
+
+**Return errors, never throw them.** Use:
+
+| Error type | When |
+|-----------|------|
+| `ServiceError.NetworkError` | Connectivity or DNS |
+| `ServiceError.TimeoutError` | The request took too long |
+| `ServiceError.ConfigurationError` | Not set up yet, such as a missing API key |
+| `ServiceError.AuthenticationError` | Set up, but the credentials were rejected |
+| `ServiceError.RateLimitError` | Quota exceeded. Carries `retryAfterSeconds` where the API reports it |
+| `ServiceError.ServiceUnavailableError` | The provider is down |
+| `ServiceError.UnsupportedLanguageError` | The language pair is out of range |
+| `ServiceError.InvalidInputError` | Blank or malformed input |
+| `ServiceError.InvalidResponseError` | The API returned an unexpected format |
+| `ServiceError.ValidationError` | A specific field or parameter failed validation; the caller must correct it before retrying |
+| `ServiceError.UnknownError` | Anything else |
+
+`ConfigurationError` and `AuthenticationError` are deliberately separate: the first means the user
+has not finished setting the service up, the second means they did and it was refused. The
+application words them differently because they call for different actions.
+
+**Other service types** (`TextToSpeech`, `OCR`, `SpellChecker`, `Dictionary`, `ImageSearch`) follow the exact same pattern — implement the interface, return `Ok`/`Err`. See the Google plugin for a complete TTS and OCR example.
+
+**User-selectable modifiers** — override `Service.options: List<ServiceOption>` to offer controls like summary length or rewrite style; the host renders them and passes the chosen values back in the request. Leave it as the default empty list when your service takes no modifiers.
+
+**Test connection** — override `Service.validate()` to check the service is configured and reachable without doing real work. It powers the settings panel's "test connection" affordance. Return `ServiceError.ConfigurationError` when required settings are missing and `ServiceError.AuthenticationError` when they're present but rejected — the host words these differently. Defaults to success, which is correct for services that need no configuration.
+
+---
+
+## Step 4 — plugin.json
+
+`src/main/resources/plugin.json`:
+
+```json
+{
+  "id":            "com.example.my-plugin",
+  "name":          "My Plugin",
+  "version":       "1.0.0",
+  "author":        "Your Name",
+  "description":   "Translates using the Example API.",
+  "minApiVersion": "2.1.0",
+  "icon":          "assets/icon.svg"
+}
+```
+
+- `id` must match your `Plugin` class exactly — this is your plugin's permanent identifier
+- `minApiVersion` — `2.1.0` is the current API. The major version must match the host's, and the
+  minor must not exceed it, so declare the oldest version your plugin actually needs
+- `icon` — path inside your JAR resources
+
+---
+
+## Step 5 — ServiceLoader registration
+
+Create this file (the filename is the full interface name):
+
+```
+src/main/resources/META-INF/services/com.github.ahatem.qtranslate.api.plugin.Plugin
+```
+
+Contents — just your Plugin class fully qualified:
+
+```
+com.example.myplugin.MyPlugin
+```
+
+This is how QTranslate finds your plugin. No reflection, no scanning, just this one file.
+
+---
+
+## Step 6 — Build and install
+
+```bash
+./gradlew jar
+```
+
+JAR is at `build/libs/my-plugin-1.0.0.jar`.
+
+**Install:**
+1. Settings → Plugins → Install Plugin → select the JAR
+2. Enable the plugin
+3. Configure it if needed (Settings → Plugins → select → Configure)
+4. Assign it in Settings → Services & Presets
+
+**Faster dev loop** — skip the install UI, copy directly:
+
+```bash
+# Windows
+./gradlew jar && copy build\libs\my-plugin-1.0.0.jar "C:\path\to\appdata\plugins\"
+```
+
+Then restart QTranslate. Much faster than reinstalling through the UI every time.
+
+---
+
+## Tips
+
+**`PluginContext`** — `onInitialize` gives you everything you need:
+- `context.logger` — writes to the app log file, visible in dev mode
+- `context.scope` — coroutine scope, cancelled when the plugin is disabled
+- `context.settings` — typed per-plugin storage: `put(key, value)` and `getString`/`getInt`/
+  `getLong`/`getDouble`/`getBoolean`, all suspend. Survives restarts
+- `context.secrets` — the same shape for API keys and tokens, kept apart so the host can protect
+  them with the platform keychain
+- `context.http` — the host's configured HTTP client. Use it rather than building your own, or the
+  user's proxy and timeout settings will not apply to your plugin
+- `context.getPluginDataDirectory()` — your sandboxed folder on disk
+- `context.notify(title, body, type)` — shows a host notification to the user (`NotificationType.INFO`
+  by default). Use it for things the user should know about outside your settings panel, such as a
+  background sync finishing or a credential expiring
+
+**Never import `:core` or `:ui-swing`** — your plugin must only depend on `:api`. If you need something that isn't in the API, open an issue.
+
+**Icons** — SVG preferred, ~32×32. FlatLaf applies a colour filter when rendering icons in the plugin list — if you want your icon to adapt to dark/light themes automatically, use a single-colour SVG. If you provide a full-colour icon it will display as-is without filtering.
+
+**Don't log credentials** — never log `settings.apiKey` or any secret. The log is visible to users.
+
+**Coroutines** — service methods are `suspend` and run on `Dispatchers.IO`. Don't block the thread.
+
+---
+
+## Troubleshooting
+
+**Plugin shows as "Failed"**
+
+Read the error in the plugin detail panel:
+- `No Plugin implementation found via ServiceLoader` → your `META-INF/services/` file is missing or has a typo in the class name
+- `plugin.json is missing or could not be parsed` → file not at `src/main/resources/plugin.json`, or invalid JSON
+- `API version incompatible` → your `minApiVersion` in `plugin.json` is newer than what the app supports, or the MAJOR version doesn't match. Check [`ApiVersion.kt`](../api/src/main/kotlin/com/github/ahatem/qtranslate/api/core/ApiVersion.kt) for the current API version and set `minApiVersion` to match
+
+**Services don't appear in Settings → Services & Presets**
+
+The plugin is enabled but the service isn't assigned. Open Settings → Services & Presets and select it from the dropdown.
+
+**`ClassNotFoundException` when the plugin runs**
+
+A class from one of your dependencies isn't in the JAR. This means the fat JAR task isn't picking up everything.
+
+Check what's actually inside your JAR:
+```bash
+jar tf build/libs/my-plugin-1.0.0.jar
+```
+You should see `.class` files from your dependencies (e.g. `io/ktor/...`). If you only see your own classes, the fat JAR task isn't working.
+
+Make sure your `tasks.jar` block includes `runtimeClasspath` — that's the configuration that holds all your `implementation` dependencies:
+```kotlin
+from(configurations.runtimeClasspath.get().map {
+    if (it.isDirectory) it else zipTree(it)
+})
+```
+Also check that your dependencies are declared as `implementation`, not `compileOnly`. Anything `compileOnly` is intentionally excluded from the JAR.
+
+**Settings dialog doesn't open**
+
+Your settings class must extend `PluginSettings.Configurable` and the annotated properties must be `var`, not `val`.
+
+**`Unresolved reference: Ok` / `Unresolved reference: Err`**
+
+`Ok` and `Err` are top-level functions from the `kotlin-result` library — they are provided transitively by the API dependency so you don't need to add `kotlin-result` to your own `build.gradle.kts`. You just need the imports:
+
+```kotlin
+import com.github.michaelbull.result.Ok
+import com.github.michaelbull.result.Err
+import com.github.michaelbull.result.Result  // for the return type
+```
+
+---
+
+## Publishing on GitHub
+
+Once your plugin works, publish its source and release JAR on GitHub so users can inspect and install it. QTranslate's signed in-app catalog and independent updater are planned but are not available yet.
+
+### Step 1 — Create a public GitHub repository
+
+Any name works, but `qtranslate-{plugin-id}` is the convention:
+
+```
+github.com/your-username/qtranslate-my-plugin
+```
+
+### Step 2 — Add the `qtranslate-plugin` topic
+
+In your repo's **Settings → Topics**, add `qtranslate-plugin`. This makes plugins easier to find on GitHub and prepares the repository for future catalog discovery.
+
+### Step 3 — Add `qtranslate-plugin.json` to your repo root
+
+This forward-compatible file records metadata that a future catalog can consume:
+
+```json
+{
+  "id":            "com.example.my-plugin",
+  "name":          "My Plugin",
+  "version":       "1.0.0",
+  "author":        "your-github-username",
+  "description":   "One-sentence plugin description.",
+  "serviceTypes":  ["TRANSLATOR"],
+  "minApiVersion": "2.1.0",
+  "sha256":        "abc123...",
+  "icon":          "assets/icon.svg"
+}
+```
+
+**Notes:**
+- `id` must match the `id` in your `Plugin` class and `plugin.json` exactly
+- `serviceTypes`: one or more of `TRANSLATOR` `TTS` `OCR` `SPELL_CHECKER` `DICTIONARY` `SUMMARIZER` `REWRITER` `IMAGE_SEARCH`
+- `sha256`: strongly recommended — the SHA-256 hash of the release JAR. Generate it with `sha256sum my-plugin.jar` (Linux/macOS) or `Get-FileHash my-plugin.jar -Algorithm SHA256` (PowerShell).
+- `icon`: path to an SVG inside your repo (not your JAR). Reserved for catalog presentation.
+
+### Step 4 — Create a GitHub Release with the JAR as an asset
+
+Attach exactly one installable plugin JAR to each release and name it `{plugin-id}-{version}.jar`. Document its minimum QTranslate API version and SHA-256 checksum in the release notes.
+
+Here is a full `release.yml` GitHub Actions workflow you can paste into `.github/workflows/release.yml`:
+
+```yaml
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build fat JAR
+        run: ./gradlew shadowJar --no-daemon
+        env:
+          PLUGIN_VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Compute SHA-256
+        id: sha256
+        run: |
+          JAR=$(ls build/libs/my-plugin-*.jar | head -1)
+          echo "hash=$(sha256sum $JAR | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "jar=$JAR" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: My Plugin ${{ steps.version.outputs.version }}
+          body: |
+            SHA-256: `${{ steps.sha256.outputs.hash }}`
+          files: ${{ steps.sha256.outputs.jar }}
+```
+
+> **Tip:** After each release, copy the computed `sha256` value into `qtranslate-plugin.json` and commit it. Until the catalog ships, users can compare that value manually before installing the JAR.
+
+### Step 5 — Add README badges (optional)
+
+```markdown
+[![Latest Release](https://img.shields.io/github/v/release/your-username/qtranslate-my-plugin?style=flat-square)](https://github.com/your-username/qtranslate-my-plugin/releases/latest)
+[![QTranslate Plugin](https://img.shields.io/badge/QTranslate-plugin-4A90D9?style=flat-square)](https://github.com/ahatem/qtranslate)
+[![License](https://img.shields.io/github/license/your-username/qtranslate-my-plugin?style=flat-square)](LICENSE)
+```
+
+---
+
+Until the catalog ships, direct users to download the JAR from GitHub Releases, verify its checksum, and install it through **Settings → Plugins → Install Plugin**. Do not claim automatic discovery or updates yet.

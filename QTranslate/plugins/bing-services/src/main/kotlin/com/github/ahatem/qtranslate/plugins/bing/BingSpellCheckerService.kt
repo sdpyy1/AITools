@@ -1,0 +1,159 @@
+package com.github.ahatem.qtranslate.plugins.bing
+
+
+import com.github.ahatem.qtranslate.api.plugin.HttpClient
+import com.github.ahatem.qtranslate.api.plugin.PluginContext
+import com.github.ahatem.qtranslate.api.plugin.ServiceError
+import com.github.ahatem.qtranslate.api.plugin.SupportedLanguages
+import com.github.ahatem.qtranslate.api.spellchecker.*
+import com.github.ahatem.qtranslate.plugins.common.ApiConfig
+import com.github.ahatem.qtranslate.plugins.common.createJsonParser
+import com.github.difflib.DiffUtils
+import com.github.difflib.patch.DeltaType
+import com.github.michaelbull.result.Ok
+import com.github.michaelbull.result.Result
+import com.github.michaelbull.result.coroutines.coroutineBinding
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+
+class BingSpellCheckerService(
+    private val pluginContext: PluginContext,
+    private val httpClient: HttpClient,
+    private val authManager: BingAuthManager,
+    private val languageMapper: BingLanguageMapper,
+    private val apiConfig: ApiConfig
+) : SpellChecker {
+
+
+    override val key: String = "bing-spell-checker"
+    override val name: String = "Bing Spell Checker"
+    override val version: String = "1.0.0"
+    override val iconPath: String = "assets/bing-translate-icon.svg"
+
+    override val supportedLanguages: SupportedLanguages
+        get() = SupportedLanguages.Specific(languageMapper.spellCheckLanguageCodes.toSet())
+
+    private val parser = createJsonParser<BingSpellCheckResponse>(pluginContext)
+
+    companion object {
+        private const val SPELLCHECK_URL = "https://www.bing.com/tspellcheckv3"
+        private const val MAX_CHUNK_LENGTH = 1000
+    }
+
+    override suspend fun check(request: SpellCheckRequest): Result<SpellCheckResponse, ServiceError> =
+        coroutineScope {
+            when {
+                request.text.isBlank() -> Ok(SpellCheckResponse(request.text, emptyList()))
+                else -> checkWithChunking(request)
+            }
+        }
+
+    private suspend fun checkWithChunking(request: SpellCheckRequest): Result<SpellCheckResponse, ServiceError> =
+        coroutineBinding {
+            val auth = authManager.getAuth().bind()
+            val language = languageMapper.toProviderCode(request.language)
+            val chunks = partitionText(request.text)
+
+            val correctedChunks = chunks
+                .map { chunk -> async { checkChunk(chunk, language, auth) } }
+                .awaitAll()
+
+            val correctedText = correctedChunks.joinToString(" ").trim()
+            SpellCheckResponse(
+                correctedText = correctedText,
+                corrections = generateCorrections(original = request.text, correctedText)
+            )
+        }
+
+    private suspend fun checkChunk(
+        text: String,
+        language: String,
+        auth: BingAuth
+    ): Result<String, ServiceError> = coroutineBinding {
+        val formData = mapOf(
+            "text" to text,
+            "fromLang" to language,
+            "token" to auth.token,
+            "key" to auth.key
+        )
+
+        val responseString = httpClient.postForm(
+            url = SPELLCHECK_URL,
+            headers = apiConfig.createHeaders(),
+            formData = formData,
+            queryParams = mapOf(
+                "isVertical" to 1,
+                "IG" to auth.ig,
+                "IID" to auth.iid,
+                "SFX" to 2
+            ),
+            cookies = mapOf("MUID" to auth.muid)
+        ).bind()
+
+        val response = parser.parse(responseString).bind()
+        response.correctedText.ifEmpty { text }
+    }
+
+    private fun partitionText(text: String): List<String> =
+        text.split(Regex("\\s+"))
+            .fold(mutableListOf("")) { acc, word ->
+                when {
+                    acc.last().isEmpty() -> acc.apply { this[lastIndex] = word }
+                    (acc.last() + " " + word).length > MAX_CHUNK_LENGTH -> acc.apply { add(word) }
+                    else -> acc.apply { this[lastIndex] = "${this[lastIndex]} $word" }
+                }
+            }
+            .filter { it.isNotBlank() }
+
+    fun generateCorrections(original: String, corrected: String): List<Correction> {
+        val corrections = mutableListOf<Correction>()
+        val origWords = original.split(" ").toList()
+        val corrWords = corrected.split(" ").toList()
+        val patch = DiffUtils.diff(origWords, corrWords)
+
+        for (delta in patch.deltas) {
+            when (delta.type) {
+                DeltaType.CHANGE -> {
+                    val origText = delta.source.lines.joinToString(" ")
+                    val corrText = delta.target.lines.joinToString(" ")
+                    val position = findPhrasePosition(original, origText)
+                    if (position != -1) {
+                        corrections.add(
+                            Correction(
+                                original = origText,
+                                startIndex = position,
+                                endIndex = position + origText.length,
+                                suggestions = listOf(corrText),
+                                type = CorrectionType.SPELLING
+                            )
+                        )
+                    }
+                }
+
+                DeltaType.DELETE -> {
+                    val origText = delta.source.lines.joinToString(" ")
+                    val position = findPhrasePosition(original, origText)
+                    if (position != -1) {
+                        corrections.add(
+                            Correction(
+                                original = origText,
+                                startIndex = position,
+                                endIndex = position + origText.length,
+                                suggestions = emptyList(),
+                                type = CorrectionType.SPELLING
+                            )
+                        )
+                    }
+                }
+
+                else -> {
+                    // INSERT delta — no original span to map to, nothing to record
+                }
+            }
+        }
+
+        return corrections
+    }
+
+    private fun findPhrasePosition(text: String, phrase: String): Int = text.indexOf(phrase)
+}

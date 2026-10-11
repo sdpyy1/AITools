@@ -1,0 +1,87 @@
+package com.github.ahatem.qtranslate.ui.swing.imagesearch
+
+import com.github.ahatem.qtranslate.api.imagesearch.ImageResult
+import com.github.ahatem.qtranslate.core.localization.LocalizationManager
+import com.github.ahatem.qtranslate.core.main.domain.model.ServiceInfo
+import com.github.ahatem.qtranslate.core.settings.data.Position
+import com.github.ahatem.qtranslate.core.settings.data.Size
+import com.github.ahatem.qtranslate.core.shared.arch.UiState
+
+/**
+ * Everything needed to render [ImageSearchDialog].
+ *
+ * Callbacks live on the state rather than the constructor so each render closes over current
+ * configuration, the same arrangement [com.github.ahatem.qtranslate.ui.swing.dictionary.QuickDictionaryDialogState]
+ * uses.
+ */
+data class ImageSearchDialogState(
+    val isVisible: Boolean,
+    val isLoading: Boolean,
+    val results: List<ImageResult>,
+    val searchedTerm: String,
+    val hasFailed: Boolean,
+    val isPinned: Boolean,
+    /** Bumped when the user asks for this popup again; a change restarts the countdown. */
+    val triggerCount: Int,
+    val availableServices: List<ServiceInfo>,
+    val selectedServiceId: String?,
+    val config: ImageSearchConfig,
+    val strings: ImageSearchStrings,
+    val onSearch: (term: String) -> Unit,
+    val onServiceSelected: (serviceId: String) -> Unit,
+    val onImageOpened: (ImageResult) -> Unit,
+    val onPinToggled: () -> Unit,
+    val onClose: () -> Unit,
+    val onSavePosition: (Position) -> Unit,
+    val onSaveSize: (Size) -> Unit
+) : UiState
+
+data class ImageSearchConfig(
+    val lastKnownSize: Size,
+    val lastKnownPosition: Position,
+    val positionNearMouse: Boolean = true,
+    /** Whether pressing outside the popup dismisses it; pinning overrides this. */
+    val closeOnClickOutside: Boolean = true,
+    /**
+     * How far to see through the popup, as a percentage.
+     *
+     * Applied as a resting opacity rather than through a fade, because this popup has no
+     * idle-hide to fade with: a grid of pictures is compared rather than read.
+     */
+    val transparencyPercentage: Int = 0
+)
+
+data class ImageSearchStrings(
+    val title: String,
+    val hintMessage: String,
+    val loadingMessage: String,
+    val notFoundMessage: String,
+    val errorMessage: String,
+    val searchButtonLabel: String,
+    val openTooltip: String,
+    val openSourceLabel: String,
+    val backLabel: String,
+    val previousLabel: String = "",
+    val nextLabel: String = "",
+    val pinTooltip: String,
+    val unpinTooltip: String,
+    val closeTooltip: String
+)
+
+/** The image search strings in the interface language, shared by the dock and the popup. */
+fun imageSearchStrings(localizer: LocalizationManager, term: String) = ImageSearchStrings(
+    title = localizer.getString("image_search_dialog.title"),
+    hintMessage = localizer.getString("image_search_dialog.hint_message"),
+    loadingMessage = localizer.getString("image_search_dialog.loading_message"),
+    notFoundMessage = localizer.getString("image_search_dialog.not_found_message", term),
+    errorMessage = localizer.getString("image_search_dialog.error_message"),
+    searchButtonLabel = localizer.getString("image_search_dialog.search_button"),
+    openTooltip = localizer.getString("image_search_dialog.open_tooltip"),
+    openSourceLabel = localizer.getString("image_search_dialog.open_source"),
+    backLabel = localizer.getString("image_search_dialog.back"),
+    previousLabel = localizer.getString("image_search_dialog.previous"),
+    nextLabel = localizer.getString("image_search_dialog.next"),
+    pinTooltip = localizer.getString("common.pin"),
+    unpinTooltip = localizer.getString("common.unpin"),
+    closeTooltip = localizer.getString("common.close")
+)

@@ -1,0 +1,267 @@
+package com.github.ahatem.qtranslate.ui.swing.main.output
+
+import com.formdev.flatlaf.extras.components.FlatButton
+import com.github.ahatem.qtranslate.core.localization.LocalizationManager
+import com.github.ahatem.qtranslate.core.settings.data.ExtraOutputType
+import com.github.ahatem.qtranslate.ui.swing.main.widgets.ReadOnlyTextPanel
+import com.github.ahatem.qtranslate.ui.swing.main.widgets.ReadOnlyTextPanelState
+import com.github.ahatem.qtranslate.ui.swing.main.widgets.TextActionsPanel
+import com.github.ahatem.qtranslate.ui.swing.shared.icon.IconManager
+import com.github.ahatem.qtranslate.ui.swing.shared.util.createButtonWithIcon
+import com.github.ahatem.qtranslate.ui.swing.shared.widgets.AdvancedTextPane
+import com.github.ahatem.qtranslate.ui.swing.shared.widgets.Renderable
+import java.awt.BorderLayout
+import java.awt.Component
+import java.awt.Container
+import java.awt.Dimension
+import java.awt.LayoutManager
+import java.awt.FlowLayout
+import java.awt.Insets
+import java.awt.Point
+import javax.swing.*
+import com.github.ahatem.qtranslate.ui.swing.shared.icon.Icons
+
+/**
+ * Why callbacks on the state, not constructor lambdas?
+ * The callbacks close over `config.copy(...)` in [com.github.ahatem.qtranslate.ui.swing.main.MainContentView.renderComponents].
+ * Putting them on the constructor would require holding a stale config reference.
+ * State-owned callbacks are re-evaluated on every render, always fresh.
+ */
+class ExtraOutputPanel(
+    private val iconManager: IconManager,
+    private val localizationManager: LocalizationManager,
+    onListen: (text: String) -> Unit,
+    onTranslateRequest: (text: String) -> Unit,
+    private val onFindInDictionary: ((String) -> Unit)? = null,
+    private val onSearchImages: ((String) -> Unit)? = null,
+    private val onSetAsInput: ((String) -> Unit)? = null,
+) : JPanel(BorderLayout()), Renderable<ExtraOutputState> {
+
+    private val textPane = AdvancedTextPane(
+        onTextChanged = {},
+        onListenRequest = onListen,
+        onTranslateRequest = onTranslateRequest
+    )
+    private val actionsPanel = TextActionsPanel(iconManager)
+    private val readOnlyPanel = ReadOnlyTextPanel(textPane, actionsPanel)
+    private val placeholderView = CenteredStateView().apply { isVisible = false }
+
+    // The placeholder is laid over the body, which stays mounted and focusable and alone decides
+    // the size, so the panel measures and tabs the same with or without it.
+    private val bodyStack = JPanel(object : LayoutManager {
+        override fun addLayoutComponent(name: String?, comp: Component?) = Unit
+        override fun removeLayoutComponent(comp: Component?) = Unit
+        override fun preferredLayoutSize(parent: Container): Dimension = readOnlyPanel.preferredSize
+        override fun minimumLayoutSize(parent: Container): Dimension = readOnlyPanel.minimumSize
+        override fun layoutContainer(parent: Container) {
+            parent.components.forEach { it.setBounds(0, 0, parent.width, parent.height) }
+        }
+    }).apply {
+        add(placeholderView)
+        add(readOnlyPanel)
+    }
+
+    private val backwardBtn = makeToggle()
+    private val summaryBtn = makeToggle()
+    private val rewriteBtn = makeToggle()
+
+    init {
+        ButtonGroup().also {
+            it.add(backwardBtn); it.add(summaryBtn); it.add(rewriteBtn)
+        }
+    }
+
+    private val gearBtn = createButtonWithIcon(iconManager, Icons.SETTINGS, 16).apply {
+        buttonType = FlatButton.ButtonType.toolBarButton
+        isFocusable = false
+        isVisible = false
+        margin = Insets(2, 4, 2, 4)
+    }
+
+    private val headerBar = JPanel(BorderLayout()).apply {
+        isOpaque = false
+        border = BorderFactory.createEmptyBorder(
+            2, 0, 2, 0,
+        )
+        val togglesPanel = JPanel(FlowLayout(FlowLayout.LEADING, 2, 2)).apply {
+            isOpaque = false
+            add(backwardBtn)
+            add(summaryBtn)
+            add(rewriteBtn)
+        }
+        val gearPanel = JPanel(FlowLayout(FlowLayout.TRAILING, 0, 2)).apply {
+            isOpaque = false
+            add(gearBtn)
+        }
+        add(togglesPanel, BorderLayout.LINE_START)
+        add(gearPanel, BorderLayout.LINE_END)
+    }
+
+    fun requestFocusOnText() = textPane.requestFocusInWindow()
+    fun setTranslateKeyStroke(old: javax.swing.KeyStroke?, new: javax.swing.KeyStroke?) =
+        textPane.setTranslateKeyStroke(old, new)
+
+    /** The underlying text component — exposed for the frame-level focus traversal policy. */
+    val textPaneComponent: JComponent get() = textPane
+
+    private var currentState: ExtraOutputState? = null
+
+    init {
+        add(headerBar, BorderLayout.NORTH)
+        add(bodyStack, BorderLayout.CENTER)
+
+        backwardBtn.addActionListener {
+            if (backwardBtn.isSelected)
+                currentState?.onTypeChanged?.invoke(ExtraOutputType.BackwardTranslate)
+        }
+        summaryBtn.addActionListener {
+            if (summaryBtn.isSelected)
+                currentState?.onTypeChanged?.invoke(ExtraOutputType.Summarize)
+        }
+        rewriteBtn.addActionListener {
+            if (rewriteBtn.isSelected)
+                currentState?.onTypeChanged?.invoke(ExtraOutputType.Rewrite)
+        }
+        gearBtn.addActionListener {
+            val state = currentState ?: return@addActionListener
+            buildConfigPopup(state).show(gearBtn, 0, gearBtn.height)
+        }
+
+        textPane.getContextMenuLabel = { key ->
+            localizationManager.getString("main_window_editor_context_menu.$key")
+        }
+        if (onFindInDictionary != null || onSearchImages != null || onSetAsInput != null) {
+            textPane.onBeforeContextMenuPopup = { menu, clickPosition ->
+                if (onFindInDictionary != null || onSearchImages != null) addFindInDictionaryItem(menu, clickPosition)
+                if (onSetAsInput != null) addSetAsInputItem(menu)
+            }
+        }
+    }
+
+    private var dictMenuItem: JMenuItem? = null
+    private var dictMenuSeparator: JSeparator? = null
+    private var imageMenuItem: JMenuItem? = null
+    private var setAsInputMenuItem: JMenuItem? = null
+    private var setAsInputSeparator: JSeparator? = null
+
+    override fun render(state: ExtraOutputState) {
+        isVisible = state.isVisible
+        if (!isVisible) return
+
+        currentState = state
+
+        backwardBtn.text = state.labelBackward
+        summaryBtn.text = state.labelSummary
+        rewriteBtn.text = state.labelRewrite
+        gearBtn.toolTipText = state.labelConfigure
+
+        backwardBtn.model.isSelected = state.activeType == ExtraOutputType.BackwardTranslate
+        summaryBtn.model.isSelected = state.activeType == ExtraOutputType.Summarize
+        rewriteBtn.model.isSelected = state.activeType == ExtraOutputType.Rewrite
+
+        // Driven by whether there is anything to configure, rather than by the type: a service
+        // that declares no options gets no button, and one that declares them for a type the
+        // host did not anticipate gets one.
+        gearBtn.isVisible = state.optionChoices.isNotEmpty()
+
+        readOnlyPanel.render(
+            ReadOnlyTextPanelState(
+                text = state.text,
+                isVisible = true,
+                isLoading = state.isLoading,
+                fontConfig = state.fontConfig,
+                fallbackFontConfig = state.fallbackFontConfig,
+                actionsState = state.actionsState,
+                isEditable = state.isEditable
+            )
+        )
+
+        val showPlaceholder = state.placeholderText != null && state.text.isBlank() && !state.isLoading
+        if (showPlaceholder) placeholderView.render(null, state.placeholderText.orEmpty())
+        placeholderView.isVisible = showPlaceholder
+    }
+
+    /**
+     * The choices come from the active service, so there is nothing here that knows what kind of
+     * option is being offered — one menu built from a list, whether those are summary lengths,
+     * rewrite styles, or something a plugin defined.
+     */
+    private fun buildConfigPopup(state: ExtraOutputState): JPopupMenu = JPopupMenu().apply {
+        state.optionChoices.forEach { choice ->
+            add(JMenuItem(choice.label).apply {
+                isEnabled = choice.id != state.selectedOptionId
+                addActionListener { state.onOptionSelected(choice.id) }
+            })
+        }
+    }
+
+    private fun addFindInDictionaryItem(menu: JPopupMenu, clickPosition: Point) {
+        dictMenuItem?.let { menu.remove(it) }
+        dictMenuSeparator?.let { menu.remove(it) }
+        imageMenuItem?.let { menu.remove(it) }
+        dictMenuItem = null
+        dictMenuSeparator = null
+        imageMenuItem = null
+
+        val clickOffset = textPane.viewToModel(clickPosition)
+        val word = (textPane.selectedText?.trim() ?: "")
+            .takeIf { it.isNotBlank() && !it.contains(' ') }
+            ?: wordAtOffset(clickOffset)
+        if (word.isEmpty()) return
+
+        val sep = JSeparator()
+        dictMenuSeparator = sep
+        menu.add(sep)
+
+        onFindInDictionary?.let { lookup ->
+            dictMenuItem = JMenuItem(
+                localizationManager.getString("main_window_editor_context_menu.find_in_dictionary")
+            ).apply { addActionListener { lookup(word) } }.also(menu::add)
+        }
+
+        onSearchImages?.let { search ->
+            imageMenuItem = JMenuItem(
+                localizationManager.getString("main_window_editor_context_menu.search_images")
+            ).apply { addActionListener { search(word) } }.also(menu::add)
+        }
+    }
+
+    private fun addSetAsInputItem(menu: JPopupMenu) {
+        setAsInputMenuItem?.let { menu.remove(it) }
+        setAsInputSeparator?.let { menu.remove(it) }
+        setAsInputMenuItem = null
+        setAsInputSeparator = null
+
+        val text = (textPane.selectedText?.trim()?.takeIf { it.isNotBlank() }
+            ?: textPane.text?.trim()).takeIf { !it.isNullOrBlank() } ?: return
+
+        val sep = JSeparator()
+        val item = JMenuItem(localizationManager.getString("main_window_editor_context_menu.set_as_input")).apply {
+            addActionListener { onSetAsInput?.invoke(text) }
+        }
+        setAsInputSeparator = sep
+        setAsInputMenuItem = item
+        menu.add(sep)
+        menu.add(item)
+    }
+
+    private fun wordAtOffset(offset: Int): String {
+        val text = textPane.text ?: return ""
+        if (offset < 0 || offset >= text.length) return ""
+        var start = offset
+        var end = offset
+        while (start > 0 && text[start - 1].isLetterOrDigit()) start--
+        while (end < text.length && text[end].isLetterOrDigit()) end++
+        return text.substring(start, end)
+    }
+
+    fun placeholderVisibleForTest(): Boolean = placeholderView.isVisible
+
+    fun bodyStackForTest(): JPanel = bodyStack
+
+    private fun makeToggle() = JToggleButton().apply {
+        putClientProperty("JButton.buttonType", "toolBarButton")
+        isFocusable = false
+        margin = Insets(3, 8, 3, 8)
+    }
+}
