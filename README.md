@@ -47,15 +47,16 @@ cd QTranslate
 ### 运行
 
 - 开发运行：`just dev`（等价于 `cargo run -p bongocat-app --release -- --run-seconds 0`）。
-- 生产构建与打包：`just build`（调用 `bongocat-packaging`，产出支持「登录时启动」的产品）。
+- 生产构建与打包：`just build`（调用 `bongocat-packaging`，产出可分发的安装包）。
 - 仅类型检查：`cargo check -p bongocat-app --locked`。
 
 ### AI 自定义魔改
 
 - **全屏自动隐藏**：当游戏 / 独占全屏视频等前台窗口覆盖整块显示器时，覆盖层淡出为透明并穿透鼠标点击（与 hover / idle 隐藏行为一致）。开关为配置项 `overlay.hide_on_fullscreen`（默认 `false`）。
   - 配置文件：`%APPDATA%\com.ayangweb.bongo-cat\development\config.json`（dev 构建）或 `production\config.json`（生产构建）的 `overlay` 段加入 `"hide_on_fullscreen": true`。
+- **开发构建开放开机自启**：撤销上游 `docs/adr/0051` 的 dev 门禁（`crates/bongocat-app/src/settings/projection.rs` 的 `startup_item_available()` 现允许 Development），开发构建也能在系统中注册独立的 `BongoCat Development` 启动项，无需先打 Production 包。
 
 ### 注意事项
 
-- **开发构建不会开机自启**：按 `docs/adr/0051`（开发构建不提供登录时启动），`cargo run` / `just dev` 属于开发构建，不会在系统中注册启动项，重启后不会自动启动。需要开机自启时，请用 `just build` 生成 **Production** 构建，并在设置中开启「登录时启动」。
+- **开机自启的开启方式**：`cargo run` / `just dev` 的开发构建现已支持「登录时启动」，在 BongoCat 设置的「登录时启动」中开启即可随系统启动；其注册项指向 `target/` 下的二进制，`cargo clean` 后会失效（个人使用可接受）。
 - 状态栏 / 任务栏 / 托盘图标默认关闭（`show_taskbar_icon` / `show_status_icon` 为 `false`），运行时通常看不到常驻入口，属预期行为。
