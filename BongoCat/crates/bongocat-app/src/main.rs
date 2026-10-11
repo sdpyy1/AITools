@@ -1,9 +1,7 @@
-// Hide the console window in packaged (release) builds so the product runs as a
-// pure GUI application. Debug builds keep the console for developer logging.
-#![cfg_attr(
-    all(not(debug_assertions), target_os = "windows"),
-    windows_subsystem = "windows"
-)]
+// Always link as a pure GUI application on Windows (no console window), including
+// debug builds, so the app stays silent in the background (e.g. launched at login
+// or double-clicked). Logs are routed to the file sink, not stdout.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 #![forbid(unsafe_code)]
 
 //! The product entry point: start every subsystem, hand the windows to GPUI and
