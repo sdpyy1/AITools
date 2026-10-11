@@ -66,7 +66,9 @@ use windows::{
     core::{BOOL, w},
 };
 
-use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowRect};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetClassNameW, GetForegroundWindow, GetShellWindow, GetWindowRect,
+};
 use windows::Win32::Graphics::Gdi::{MonitorFromWindow, MONITOR_DEFAULTTONULL};
 
 /// Every physical key press the Raw Input service has seen since the process
@@ -84,14 +86,50 @@ pub fn key_press_total() -> u64 {
     KEY_PRESS_TOTAL.load(Ordering::Relaxed)
 }
 
-/// Whether the foreground window currently covers the entire monitor it sits
-/// on — how fullscreen games and exclusive-fullscreen video present.
+/// How much of a monitor a window has to cover before it counts as taking the
+/// screen over.
+///
+/// Borderless-windowed games never enter exclusive fullscreen: they are ordinary
+/// top-level windows sized to the monitor, often off by a pixel or two and
+/// sometimes deliberately a little larger, so requiring exact containment misses
+/// every one of them. One side not covered at all — the taskbar a maximized
+/// ordinary application leaves alone — costs about three percent on a 1440p
+/// display, so anything at or above this still is a window that means it.
+const FULLSCREEN_COVERAGE: f64 = 0.98;
+
+/// Whether `hwnd`'s window class is `expected`.
+fn window_class_is(hwnd: HWND, expected: &str) -> bool {
+    let mut buffer = [0_u16; 256];
+    // SAFETY: `buffer` outlives the call and `GetClassNameW` writes no more than
+    // its length.
+    let length = unsafe { GetClassNameW(hwnd, &mut buffer) } as usize;
+    if length == 0 || length >= buffer.len() {
+        return false;
+    }
+    // Compared as UTF-16 code units: comparing bytes would need an encoding the
+    // buffer itself does not carry.
+    let expected: Vec<u16> = expected.encode_utf16().collect();
+    buffer[..length] == expected[..]
+}
+
+/// Whether the foreground window currently takes over the monitor it sits on,
+/// whether by exclusive fullscreen or by a borderless window covering it.
 ///
 /// The product's own window (`bongo`) is excluded so it never hides itself.
 pub fn foreground_window_is_fullscreen(bongo: HWND) -> bool {
     // SAFETY: `GetForegroundWindow` returns a valid (possibly null) HWND.
     let foreground = unsafe { GetForegroundWindow() };
     if foreground.is_invalid() || foreground == bongo {
+        return false;
+    }
+    // The desktop owns the foreground whenever nothing else does, and it spans
+    // the whole monitor, so it has to be named and skipped: without this, closing
+    // the last window or clicking an empty patch of desktop would hide the pet
+    // and leave it hidden.
+    if unsafe { GetShellWindow() } == foreground
+        || window_class_is(foreground, "Progman")
+        || window_class_is(foreground, "WorkerW")
+    {
         return false;
     }
     let mut rect = RECT {
@@ -129,10 +167,20 @@ pub fn foreground_window_is_fullscreen(bongo: HWND) -> bool {
     if !unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
         return false;
     }
-    rect.left <= info.rcMonitor.left
-        && rect.top <= info.rcMonitor.top
-        && rect.right >= info.rcMonitor.right
-        && rect.bottom >= info.rcMonitor.bottom
+    let monitor = info.rcMonitor;
+    let monitor_width = monitor.right - monitor.left;
+    let monitor_height = monitor.bottom - monitor.top;
+    if monitor_width <= 0 || monitor_height <= 0 {
+        return false;
+    }
+    let overlap_width = rect.right.min(monitor.right) - rect.left.max(monitor.left);
+    let overlap_height = rect.bottom.min(monitor.bottom) - rect.top.max(monitor.top);
+    if overlap_width <= 0 || overlap_height <= 0 {
+        return false;
+    }
+    let coverage = f64::from(overlap_width) * f64::from(overlap_height)
+        / (f64::from(monitor_width) * f64::from(monitor_height));
+    coverage >= FULLSCREEN_COVERAGE
 }
 
 const WINDOW_CLASS: windows::core::PCWSTR = w!("BongoCatProductRawInputWindow");
