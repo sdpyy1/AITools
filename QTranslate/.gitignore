@@ -32,6 +32,7 @@ out/
 # =============================================================================
 # Generated Files & Packages
 # =============================================================================
+dist/
 # Executables, archives, distribution packages
 *.jar
 !gradle/wrapper/gradle-wrapper.jar
