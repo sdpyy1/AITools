@@ -25,6 +25,11 @@ Free and open source · Windows, macOS, Linux · Plugins for local and cloud ser
 
 </div>
 
+> **Notes for this build**
+>
+> - **Mozhi default instance:** The bundled Mozhi plugin now defaults to `https://mozhi.pussthecat.org` with the **Google** engine. The upstream default (`mozhi.adminforge.de`) and most other public instances are frequently unreachable from some regions (e.g. mainland China), which caused `Network error: Connect timeout`. If that instance is slow or unavailable, open **Settings → Mozhi → Test All Endpoints** to auto-pick the fastest working public instance, or self-host Mozhi and enter its URL under **Self-hosted**.
+> - **Hotkeys:** `Ctrl+R` is not bound in the default scheme. QTranslate ships **Legacy QTranslate** and **Modern** hotkey presets — switch schemes or rebind any action in **Settings → Hotkeys**. Default keys: `Ctrl+Q` translate, `Ctrl+D` dictionary, `Ctrl+Shift+Q` images, `Ctrl+E` speak, `Ctrl+I` OCR, `Ctrl+L` cycle languages.
+
 ---
 
 ## Start with the right download

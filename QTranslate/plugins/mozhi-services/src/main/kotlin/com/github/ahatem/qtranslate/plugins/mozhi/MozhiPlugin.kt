@@ -183,7 +183,10 @@ private const val MOZHI_INSTANCE_STORAGE_KEY = "instanceUrl"
 private val LEGACY_CUSTOM_VALUES = setOf("Custom", CUSTOM_INSTANCE)
 private const val MOZHI_INSTANCE_OPTIONS = "https://mozhi.aryak.me,https://translate.projectsegfau.lt,https://translate.nerdvpn.de,https://mozhi.ducks.party,https://mozhi.pussthecat.org,https://mozhi.adminforge.de,https://translate.privacyredirect.com,https://mozhi.canine.tools,https://mzh.dc09.ru,https://mozhi.franklyflawless.org,Self-hosted"
 private val PUBLIC_INSTANCES = MOZHI_INSTANCE_OPTIONS.split(',').filterNot { it == CUSTOM_INSTANCE }
-private const val DEFAULT_INSTANCE_URL = "https://mozhi.adminforge.de"
+// adminforge.de is frequently unreachable from some regions (e.g. mainland China); pussthecat.org
+// is the most consistently reachable public instance and its Google engine accepts both
+// `from=auto` and `zh-CN`, so it proxies Google-quality translation without a key.
+private const val DEFAULT_INSTANCE_URL = "https://mozhi.pussthecat.org"
 private const val DEFAULT_ENGINE = "Google"
 private val SUPPORTED_ENGINES = setOf(
     "Google", "DeepL", "DuckDuckGo", "LibreTranslate", "MyMemory", "Reverso", "Yandex"

@@ -22,10 +22,11 @@ data class ServicePreset(
         //
         // Each role is chosen independently rather than defaulting everything to one vendor:
         //
-        // - Translator and TTS stay on Google. Translator has a three-tier fallback (an optional
-        //   official API, an unofficial primary endpoint, and a separate unofficial fallback
-        //   endpoint) plus a circuit breaker between the last two, and TTS calls its own dedicated
-        //   audio endpoint -- neither needs a key, and both have held up well in practice.
+        // - Translator moves to Mozhi. Mozhi is a key-free meta-proxy that forwards to engines
+        //   (DeepL, DuckDuckGo, LibreTranslate, Yandex, Reverso, MyMemory, …) through community
+        //   public instances, so it keeps working in places where a direct Google connection is
+        //   blocked or rate-limited. TTS stays on Google, which calls its own dedicated audio
+        //   endpoint and needs no key.
         // - Spell Checker and Dictionary move to System Services / Wiktionary. Google's versions of
         //   both piggyback on the same unofficial translate_a/single endpoint used for Translator,
         //   but with no fallback endpoint and no official alternative -- Dictionary doesn't even
@@ -44,9 +45,10 @@ data class ServicePreset(
         // All four bundled plugins referenced here ship enabled by default, so a fresh install
         // resolves every role without the user configuring anything.
         private const val GOOGLE = "google-services"
+        private const val MOZHI = "mozhi-services"
         private const val SYSTEM = "system-services"
         private const val WIKIMEDIA = "wikimedia-reference"
-        private val DEFAULT_TRANSLATOR    = ServiceId.of(GOOGLE, ServiceId.DEFAULT_INSTANCE, "google-translator")
+        private val DEFAULT_TRANSLATOR    = ServiceId.of(MOZHI, ServiceId.DEFAULT_INSTANCE, "mozhi-services-translator")
         private val DEFAULT_TTS           = ServiceId.of(GOOGLE, ServiceId.DEFAULT_INSTANCE, "google-tts")
         private val DEFAULT_SPELL_CHECKER = ServiceId.of(SYSTEM, ServiceId.DEFAULT_INSTANCE, "system-spell-checker")
         private val DEFAULT_OCR           = ServiceId.of(SYSTEM, ServiceId.DEFAULT_INSTANCE, "system-ocr")
