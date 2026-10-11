@@ -85,6 +85,7 @@ impl Default for NativeConfig {
                 hide_on_idle_delay_seconds: DEFAULT_HIDE_ON_IDLE_DELAY_SECONDS,
                 keep_inside_screen: true,
                 hide_on_fullscreen: false,
+                show_keystroke_count: false,
                 },
                 input: InputConfig {
                 gamepad: GamepadInputConfig {

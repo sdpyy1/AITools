@@ -369,6 +369,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
         keep_inside_screen: application.config().overlay.keep_inside_screen,
         hide_on_fullscreen: application.config().overlay.hide_on_fullscreen,
+        show_keystroke_count: application.config().overlay.show_keystroke_count,
         maximum_fps: application.config().overlay.maximum_fps,
         window_bounds: application.overlay_window_placement().map(|placement| {
             OverlayWindowBounds::new(placement.x, placement.y, placement.width, placement.height)

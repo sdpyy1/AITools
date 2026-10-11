@@ -8,6 +8,7 @@
 
 mod cover_capture;
 mod geometry;
+mod keystroke_hud;
 mod pipelines;
 mod renderer;
 mod session;
@@ -24,6 +25,7 @@ mod window_proc;
 // module would be the same list ten times.
 pub(crate) use cover_capture::*;
 pub(crate) use geometry::*;
+pub(crate) use keystroke_hud::*;
 pub(crate) use pipelines::*;
 pub(crate) use renderer::*;
 pub(crate) use session::*;

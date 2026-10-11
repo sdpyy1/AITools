@@ -199,6 +199,10 @@ pub(crate) struct ProductOverlaySession {
     /// "not ours right now".
     pub(crate) idle: IdleHide,
     pub(crate) placement: OverlayPlacementConstraint,
+    /// The keystroke counter. It hangs off the session rather than the model
+    /// window because every scale and model change replaces that window, and the
+    /// number the user has been watching must survive the replacement.
+    pub(crate) keystroke_hud: Option<KeystrokeHud>,
     /// Monotonic base for every time-based rule in this session. The hover fade
     /// and the placement settle delay both measure elapsed time from it, so the
     /// session needs exactly one wall-clock reading at start.
@@ -285,6 +289,7 @@ impl ProductOverlaySession {
             input_diagnostics: None,
             input_stopped: false,
             frames_presented,
+            keystroke_hud: None,
             dynamic_snapshots: 0,
             model_commit_rejections: 0,
             previous_snapshot: Arc::clone(&initial_frame.snapshot),
@@ -621,7 +626,37 @@ impl ProductOverlaySession {
                 || self.idle.hidden()
                 || fullscreen_hidden,
         )?;
+        // The counter follows the presentation the overlay was just given, so it
+        // is never the one thing still visible after the cat has faded out.
+        self.update_keystroke_hud(options, bounds, alpha)?;
         Ok(())
+    }
+
+    /// Keep the keystroke counter beside the overlay and in step with its fade.
+    ///
+    /// The window is created the first time the setting asks for it and torn down
+    /// when it stops, so a user who never turns the counter on never pays for a
+    /// second top-level window. It lives across model-window replacements, which
+    /// is why the session owns it rather than the window it is drawn against.
+    fn update_keystroke_hud(
+        &mut self,
+        options: OverlaySessionOptions,
+        bounds: OverlayWindowBounds,
+        alpha: f32,
+    ) -> Result<(), OverlayError> {
+        if !options.show_keystroke_count {
+            if let Some(mut hud) = self.keystroke_hud.take() {
+                hud.finish();
+            }
+            return Ok(());
+        }
+        if self.keystroke_hud.is_none() {
+            self.keystroke_hud = Some(KeystrokeHud::create()?);
+        }
+        let Some(hud) = self.keystroke_hud.as_mut() else {
+            return Ok(());
+        };
+        hud.update(bounds, alpha)
     }
 
     /// Create a native window that already carries the current hover fade.

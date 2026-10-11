@@ -134,6 +134,11 @@ pub struct OverlayConfig {
     /// pointer events pass through, exactly like the hover and idle hides.
     #[serde(default)]
     pub hide_on_fullscreen: bool,
+    /// Show a running count of physical key presses at the lower-left corner of
+    /// the overlay, with a short "+1" flourish on every press. Off by default: it
+    /// is a flourish on top of the pet, not part of the default presentation.
+    #[serde(default)]
+    pub show_keystroke_count: bool,
 }
 
 /// Upper bound of the hover hide delay, in whole seconds.

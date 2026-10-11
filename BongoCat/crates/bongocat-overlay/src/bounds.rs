@@ -74,6 +74,11 @@ pub struct OverlaySessionOptions {
     /// like the hover and idle hides: the window fades out and passes pointer
     /// events through rather than being destroyed.
     pub hide_on_fullscreen: bool,
+    /// Show the running keystroke count and its per-press flourish at the
+    /// lower-left corner of the overlay. The counter follows the window's own
+    /// fade, so it disappears with the cat instead of hovering over an empty
+    /// desktop.
+    pub show_keystroke_count: bool,
     pub maximum_fps: u16,
     pub window_bounds: Option<OverlayWindowBounds>,
     /// Windows only: whether the model window owns a taskbar button.
@@ -103,6 +108,7 @@ impl OverlaySessionOptions {
             hide_on_idle_delay_ms: idle_hide_delay_ms(settings.hide_on_idle_delay_seconds),
             keep_inside_screen: settings.keep_inside_screen,
             hide_on_fullscreen: self.hide_on_fullscreen,
+            show_keystroke_count: self.show_keystroke_count,
             maximum_fps: self.maximum_fps,
             window_bounds: self.window_bounds,
             // The taskbar button is a system preference rather than overlay
@@ -158,6 +164,7 @@ impl Default for OverlaySessionOptions {
             hide_on_idle_delay_ms: idle_hide_delay_ms(DEFAULT_HIDE_ON_IDLE_DELAY_SECONDS),
             keep_inside_screen: true,
             hide_on_fullscreen: false,
+            show_keystroke_count: false,
             maximum_fps: 60,
             window_bounds: None,
             // The shipped v1 configuration leaves the model window's taskbar

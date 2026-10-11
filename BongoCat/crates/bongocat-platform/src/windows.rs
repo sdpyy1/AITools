@@ -69,6 +69,21 @@ use windows::{
 use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowRect};
 use windows::Win32::Graphics::Gdi::{MonitorFromWindow, MONITOR_DEFAULTTONULL};
 
+/// Every physical key press the Raw Input service has seen since the process
+/// started, across the whole machine.
+///
+/// The count lives next to the capture that produces it because raw packets are
+/// the only place a press is seen exactly once: a key the driver auto-repeats is
+/// not another press here, and a press that any later layer drops or remaps has
+/// still happened. Consumers only read it, so adding one cannot change the
+/// number.
+static KEY_PRESS_TOTAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many physical key presses have happened since the process started.
+pub fn key_press_total() -> u64 {
+    KEY_PRESS_TOTAL.load(Ordering::Relaxed)
+}
+
 /// Whether the foreground window currently covers the entire monitor it sits
 /// on — how fullscreen games and exclusive-fullscreen video present.
 ///
@@ -498,6 +513,9 @@ impl WindowState {
                     InputEdge::Up
                 };
                 self.diagnostics.captured_edges = self.diagnostics.captured_edges.saturating_add(1);
+                if packet.flags & RI_KEY_BREAK == 0 {
+                    KEY_PRESS_TOTAL.fetch_add(1, Ordering::Relaxed);
+                }
                 self.enqueue(CapturedEvent::Edge {
                     control: InputControl::Key(key),
                     system: SystemControl(normalize_virtual_key(packet)),
