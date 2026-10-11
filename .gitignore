@@ -1,0 +1,3 @@
+# BongoCat 源码为独立 git 仓库，单独管理其自定义与提交，
+# 不纳入 AITools 父仓库的跟踪，避免嵌套仓库冲突。
+/BongoCat/
