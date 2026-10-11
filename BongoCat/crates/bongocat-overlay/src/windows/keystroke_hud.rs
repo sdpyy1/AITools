@@ -42,13 +42,26 @@ const GLYPH_WIDTH: i32 = GLYPH_COLS * GLYPH_SCALE;
 const GLYPH_HEIGHT: i32 = GLYPH_ROWS * GLYPH_SCALE;
 /// Space between two glyphs, which is one glyph pixel at this scale.
 const GLYPH_ADVANCE: i32 = GLYPH_WIDTH + GLYPH_SCALE;
-const HUD_MARGIN: i32 = 6;
+/// Inset from the overlay's corner. Two pixels is as close to the corner as the
+/// black outline can sit without its own pixels being clipped away.
+const HUD_MARGIN: i32 = 2;
 /// How far a flourish rises before it disappears.
 const POP_TRAVEL: i32 = 28;
-const HUD_WIDTH: i32 = MAX_COUNT_DIGITS as i32 * GLYPH_ADVANCE + HUD_MARGIN * 2;
-const HUD_HEIGHT: i32 = POP_TRAVEL + GLYPH_HEIGHT + HUD_MARGIN * 2;
-/// Width of the two-glyph "+1" flourish, used to centre it over the number.
+/// Width of the two-glyph "+1", which leaves from the right of the number.
 const FLOURISH_WIDTH: i32 = GLYPH_ADVANCE * 2 - GLYPH_SCALE;
+/// Gap between the last digit and the travelling "+1".
+const FLOURISH_GAP: i32 = 4;
+/// Widest horizontal offset the jitter uses, kept inside the bitmap so a burst
+/// of presses never pushes a flourish past its right edge.
+const MAX_JITTER: i32 = 5;
+/// Wide enough for the longest number plus the flourish that flies off it, so
+/// the window never has to be resized while the count is growing.
+const HUD_WIDTH: i32 = HUD_MARGIN * 2
+    + MAX_COUNT_DIGITS as i32 * GLYPH_ADVANCE
+    + FLOURISH_GAP
+    + FLOURISH_WIDTH
+    + MAX_JITTER;
+const HUD_HEIGHT: i32 = POP_TRAVEL + GLYPH_HEIGHT + HUD_MARGIN * 2;
 
 /// How long a "+1" stays on screen.
 const POP_LIFETIME: Duration = Duration::from_millis(750);
@@ -173,7 +186,7 @@ impl KeystrokeHud {
             for index in 0..(total - self.last_total).min(MAX_ACTIVE_POPS as u64) {
                 self.flourishes.push_back(Flourish {
                     born: Instant::now(),
-                    jitter: (index as i32 % 3 - 1) * 5,
+                    jitter: (index as i32 % 3 - 1) * MAX_JITTER,
                 });
                 if self.flourishes.len() > MAX_ACTIVE_POPS {
                     self.flourishes.pop_front();
@@ -256,14 +269,18 @@ impl KeystrokeHud {
         } else {
             self.last_total.to_string().into_bytes()
         };
-        let mut cursor_x = HUD_WIDTH - HUD_MARGIN - (text.len() as i32) * GLYPH_ADVANCE;
-        for digit in text {
+        // The number sits flush against the overlay's left edge and the
+        // flourish leaves from whatever its last digit currently is, so the two
+        // read as one unit and the number never drifts away from the corner as
+        // the count grows longer.
+        let mut cursor_x = HUD_MARGIN;
+        for digit in &text {
             draw_glyph(&mut pixels, DIGIT_GLYPHS[(digit - b'0') as usize], cursor_x, baseline_y, 1.0);
             cursor_x += GLYPH_ADVANCE;
         }
+        let flourish_x = cursor_x + FLOURISH_GAP;
 
         let now = Instant::now();
-        let flourish_x = (HUD_WIDTH - FLOURISH_WIDTH) / 2;
         for flourish in &self.flourishes {
             let progress = (now.duration_since(flourish.born).as_secs_f32()
                 / POP_LIFETIME.as_secs_f32())
@@ -275,7 +292,7 @@ impl KeystrokeHud {
             } else {
                 1.0 - (progress - 0.2) / 0.8
             };
-            let y = baseline_y - GLYPH_HEIGHT / 2 - (progress * POP_TRAVEL as f32) as i32;
+            let y = baseline_y - (progress * POP_TRAVEL as f32) as i32;
             draw_glyph(&mut pixels, PLUS_GLYPH, flourish_x + flourish.jitter, y, visibility);
             draw_glyph(
                 &mut pixels,
