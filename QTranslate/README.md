@@ -29,6 +29,7 @@ Free and open source · Windows, macOS, Linux · Plugins for local and cloud ser
 >
 > - **Mozhi default instance:** The bundled Mozhi plugin now defaults to `https://mozhi.pussthecat.org` with the **Google** engine. The upstream default (`mozhi.adminforge.de`) and most other public instances are frequently unreachable from some regions (e.g. mainland China), which caused `Network error: Connect timeout`. If that instance is slow or unavailable, open **Settings → Mozhi → Test All Endpoints** to auto-pick the fastest working public instance, or self-host Mozhi and enter its URL under **Self-hosted**.
 > - **Hotkeys:** `Ctrl+R` is not bound in the default scheme. QTranslate ships **Legacy QTranslate** and **Modern** hotkey presets — switch schemes or rebind any action in **Settings → Hotkeys**. Default keys: `Ctrl+Q` translate, `Ctrl+D` dictionary, `Ctrl+Shift+Q` images, `Ctrl+E` speak, `Ctrl+I` OCR, `Ctrl+L` cycle languages.
+> - **Autostart stays in the tray:** At login the app hides to the system tray instead of opening the main window. This is driven by the `--startup` flag — the in-app **Launch on system startup** setting registers the startup command with `--startup` automatically, so a normal login launch stays hidden (and tray left-click / `Ctrl+Q` restores it). A manual Startup-folder shortcut must also pass `--startup`; otherwise a second instance's focus signal would pop the window back up. Hidden start only engages when a system tray is available, otherwise it falls back to a visible window.
 
 ---
 
