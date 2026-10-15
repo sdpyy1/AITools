@@ -9,6 +9,7 @@ fn run_options_default_to_an_unbounded_product_lifetime() {
         options,
         RunOptions {
             run_seconds: 0,
+            background: false,
             #[cfg(target_os = "windows")]
             single_instance_ready_file: None,
             #[cfg(target_os = "windows")]

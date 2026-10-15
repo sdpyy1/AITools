@@ -164,7 +164,7 @@ impl KeystrokeHud {
         Ok(Self {
             hwnd,
             flourishes: VecDeque::new(),
-            last_total: bongocat_platform::key_press_total(),
+            last_total: bongocat_platform::input_press_total(),
             visible: false,
             last_origin: None,
         })
@@ -181,7 +181,7 @@ impl KeystrokeHud {
         bounds: OverlayWindowBounds,
         alpha: f32,
     ) -> Result<(), OverlayError> {
-        let total = bongocat_platform::key_press_total();
+        let total = bongocat_platform::input_press_total();
         if total > self.last_total {
             for index in 0..(total - self.last_total).min(MAX_ACTIVE_POPS as u64) {
                 self.flourishes.push_back(Flourish {

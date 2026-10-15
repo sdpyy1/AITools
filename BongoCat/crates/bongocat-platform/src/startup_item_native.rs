@@ -1,7 +1,7 @@
 use crate::{StartupItemEnvironment, StartupItemError, StartupItemState};
 use auto_launch::{AutoLaunch, AutoLaunchBuilder, MacOSLaunchMode, WindowsEnableMode};
 
-const PRODUCT_ARGUMENTS: [&str; 2] = ["--run-seconds", "0"];
+const PRODUCT_ARGUMENTS: [&str; 3] = ["--run-seconds", "0", "--background"];
 const PRODUCT_BUNDLE_IDENTIFIER: &str = "com.ayangweb.bongo-cat";
 
 pub(super) fn state(

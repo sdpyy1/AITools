@@ -87,7 +87,7 @@ pub use windows::WindowsInputService;
 #[cfg(target_os = "windows")]
 pub use windows::{
     current_display_bounds, display_bounds_for_window, foreground_window_is_fullscreen,
-    global_window_origin, hide_native_window, key_press_total, local_window_origin,
+    global_window_origin, hide_native_window, input_press_total, local_window_origin,
     request_native_window_close, show_native_window, system_language,
     taskbar_icon_is_visible, terminate_after_product_shutdown,
 };

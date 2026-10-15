@@ -35,6 +35,13 @@ pub(crate) struct RunOptions {
     #[arg(long, value_name = "SECONDS", default_value_t = 0)]
     pub(crate) run_seconds: u64,
 
+    /// Run in the background: show the overlay and status icon but never open
+    /// the settings window. The login item launches with this so a machine that
+    /// starts the product at login never pops the main interface in the user's
+    /// face.
+    #[arg(long)]
+    pub(crate) background: bool,
+
     /// Paint the settings window and exit once the run guard fires.
     #[arg(long)]
     pub(crate) settings_window_smoke: bool,
@@ -227,6 +234,11 @@ impl RunOptions {
     }
 
     pub(crate) fn opens_settings_window_on_start(&self) -> bool {
+        // `--background` is exactly what the login item passes, so a machine that
+        // starts the product at login never opens the settings window on its own.
+        if self.background {
+            return false;
+        }
         let mut opens_settings_window =
             self.settings_window_smoke || self.settings_window_open_smoke;
         #[cfg(target_os = "macos")]

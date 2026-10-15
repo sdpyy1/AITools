@@ -79,11 +79,16 @@ use windows::Win32::Graphics::Gdi::{MonitorFromWindow, MONITOR_DEFAULTTONULL};
 /// not another press here, and a press that any later layer drops or remaps has
 /// still happened. Consumers only read it, so adding one cannot change the
 /// number.
-static KEY_PRESS_TOTAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+///
+/// A mouse button press is counted here too: the product shows one running
+/// tally of "things the user has pressed", and a click is as much an input as a
+/// keystroke.
+static INPUT_PRESS_TOTAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// How many physical key presses have happened since the process started.
-pub fn key_press_total() -> u64 {
-    KEY_PRESS_TOTAL.load(Ordering::Relaxed)
+/// How many physical key presses and mouse button presses have happened since
+/// the process started.
+pub fn input_press_total() -> u64 {
+    INPUT_PRESS_TOTAL.load(Ordering::Relaxed)
 }
 
 /// How much of a monitor a window has to cover before it counts as taking the
@@ -562,7 +567,7 @@ impl WindowState {
                 };
                 self.diagnostics.captured_edges = self.diagnostics.captured_edges.saturating_add(1);
                 if packet.flags & RI_KEY_BREAK == 0 {
-                    KEY_PRESS_TOTAL.fetch_add(1, Ordering::Relaxed);
+                    INPUT_PRESS_TOTAL.fetch_add(1, Ordering::Relaxed);
                 }
                 self.enqueue(CapturedEvent::Edge {
                     control: InputControl::Key(key),
@@ -641,6 +646,9 @@ impl WindowState {
                     {
                         self.diagnostics.captured_edges =
                             self.diagnostics.captured_edges.saturating_add(1);
+                        if matches!(edge, InputEdge::Down) {
+                            INPUT_PRESS_TOTAL.fetch_add(1, Ordering::Relaxed);
+                        }
                         self.enqueue(CapturedEvent::Edge {
                             control: InputControl::Mouse(button),
                             system: SystemControl(virtual_key),
