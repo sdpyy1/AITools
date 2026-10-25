@@ -1,0 +1,5 @@
+/target
+temp-*
+*.zip
+plan.md
+references/

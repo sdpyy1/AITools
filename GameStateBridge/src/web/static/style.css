@@ -1,0 +1,1315 @@
+:root {
+    --bg-primary: #0f0f23;
+    --bg-secondary: #1a1a2e;
+    --bg-card: #16213e;
+    --bg-hover: #1f2b47;
+    --text-primary: #e94560;
+    --text-secondary: #a0a0a0;
+    --text-bright: #ffffff;
+    --border-color: #2a2a4a;
+    --success: #4ecca3;
+    --warning: #f4d03f;
+    --danger: #e94560;
+    --info: #3498db;
+    --ct-color: #3498db;
+    --t-color: #e94560;
+    --health-color: #e74c3c;
+    --armor-color: #3498db;
+    --money-color: #f1c40f;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-bright);
+    min-height: 100vh;
+    line-height: 1.6;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+header {
+    text-align: center;
+    padding: 40px 0;
+    border-bottom: 1px solid var(--border-color);
+    margin-bottom: 30px;
+}
+
+header h1 {
+    font-size: 2.5rem;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+    letter-spacing: 2px;
+}
+
+.subtitle {
+    color: var(--text-secondary);
+    font-size: 1.1rem;
+}
+
+.nav-tabs {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 30px;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 10px;
+}
+
+.tab-btn {
+    background: transparent;
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    padding: 10px 24px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 1rem;
+    transition: all 0.3s;
+}
+
+.tab-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-bright);
+}
+
+.tab-btn.active {
+    background: var(--text-primary);
+    color: var(--text-bright);
+    border-color: var(--text-primary);
+}
+
+.tab-content {
+    display: none;
+}
+
+.tab-content.active {
+    display: block;
+    animation: fadeIn 0.3s ease;
+}
+
+.games-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 20px;
+}
+
+.game-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 30px;
+    cursor: pointer;
+    transition: all 0.3s;
+    position: relative;
+    overflow: hidden;
+}
+
+.game-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 3px;
+    background: var(--text-primary);
+    transform: scaleX(0);
+    transition: transform 0.3s;
+}
+
+.game-card:hover {
+    transform: translateY(-4px);
+    border-color: var(--text-primary);
+    box-shadow: 0 8px 32px rgba(233, 69, 96, 0.15);
+}
+
+.game-card:hover::before {
+    transform: scaleX(1);
+}
+
+.game-card .game-icon {
+    font-size: 3rem;
+    margin-bottom: 16px;
+}
+
+.game-card h3 {
+    font-size: 1.5rem;
+    margin-bottom: 8px;
+}
+
+.game-card .game-type {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    margin-bottom: 16px;
+}
+
+.game-card .status-badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 0.85rem;
+    font-weight: 500;
+}
+
+.status-badge.active {
+    background: rgba(78, 204, 163, 0.15);
+    color: var(--success);
+}
+
+.status-badge.inactive {
+    background: rgba(160, 160, 160, 0.15);
+    color: var(--text-secondary);
+}
+
+.status-badge.unsupported {
+    background: rgba(233, 69, 96, 0.15);
+    color: var(--danger);
+}
+
+#dashboard-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 24px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+#dashboard-title {
+    font-size: 1.8rem;
+    color: var(--text-primary);
+}
+
+.controls {
+    display: flex;
+    gap: 12px;
+}
+
+.btn {
+    padding: 10px 24px;
+    border: none;
+    border-radius: 8px;
+    font-size: 1rem;
+    cursor: pointer;
+    transition: all 0.3s;
+    font-weight: 500;
+}
+
+.btn-sm {
+    padding: 6px 14px;
+    font-size: 0.85rem;
+}
+
+.btn-primary {
+    background: var(--text-primary);
+    color: var(--text-bright);
+}
+
+.btn-primary:hover {
+    background: #d13a52;
+}
+
+.btn-secondary {
+    background: var(--bg-hover);
+    color: var(--text-bright);
+    border: 1px solid var(--border-color);
+}
+
+.btn-secondary:hover {
+    background: var(--border-color);
+}
+
+.btn-info {
+    background: var(--info);
+    color: var(--text-bright);
+}
+
+.btn-info:hover {
+    background: #2980b9;
+}
+
+.btn-danger {
+    background: var(--danger);
+    color: var(--text-bright);
+}
+
+.btn-danger:hover {
+    background: #c0392b;
+}
+
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* ===== 连接状态条 ===== */
+.connection-bar {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 10px 20px;
+    margin-bottom: 20px;
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.connection-bar::before {
+    content: '';
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--text-secondary);
+    display: inline-block;
+}
+
+.connection-bar.connected::before {
+    background: var(--success);
+    box-shadow: 0 0 8px var(--success);
+}
+
+.connection-bar.disconnected::before {
+    background: var(--danger);
+}
+
+.connection-bar.connected {
+    color: var(--success);
+}
+
+/* ===== 对局横幅 ===== */
+.match-banner {
+    background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg-secondary) 100%);
+    border: 1px solid var(--border-color);
+    border-radius: 16px;
+    padding: 24px 32px;
+    margin-bottom: 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 16px;
+}
+
+.map-info {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.map-name {
+    font-size: 1.8rem;
+    font-weight: 700;
+    color: var(--text-bright);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.game-mode {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+}
+
+.score-board {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    font-size: 2.5rem;
+    font-weight: 700;
+}
+
+.team {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+}
+
+.team-name {
+    font-size: 0.9rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+}
+
+.team.ct .team-name { color: var(--ct-color); }
+.team.t .team-name { color: var(--t-color); }
+.team.ct .team-score { color: var(--ct-color); }
+.team.t .team-score { color: var(--t-color); }
+
+.score-divider {
+    color: var(--text-secondary);
+    font-size: 2rem;
+}
+
+.match-phase {
+    font-size: 1rem;
+    font-weight: 500;
+    padding: 6px 16px;
+    border-radius: 20px;
+    background: rgba(233, 69, 96, 0.15);
+    color: var(--text-primary);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+/* ===== 玩家面板 ===== */
+.player-panel {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 16px;
+    padding: 24px;
+    margin-bottom: 20px;
+}
+
+.player-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.player-name {
+    font-size: 1.3rem;
+    font-weight: 600;
+    color: var(--text-bright);
+}
+
+.player-team {
+    font-size: 0.85rem;
+    font-weight: 500;
+    padding: 4px 12px;
+    border-radius: 20px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.player-team.ct {
+    background: rgba(52, 152, 219, 0.15);
+    color: var(--ct-color);
+}
+
+.player-team.terrorist {
+    background: rgba(233, 69, 96, 0.15);
+    color: var(--t-color);
+}
+
+.player-team.unknown {
+    background: rgba(160, 160, 160, 0.15);
+    color: var(--text-secondary);
+}
+
+.player-stats-row {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+}
+
+.stat-box {
+    flex: 1;
+    min-width: 100px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 16px;
+    text-align: center;
+    transition: all 0.3s;
+}
+
+.stat-box:hover {
+    border-color: var(--text-primary);
+}
+
+.stat-label {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 8px;
+}
+
+.stat-value {
+    font-size: 1.6rem;
+    font-weight: 700;
+    color: var(--text-bright);
+}
+
+.stat-bar {
+    margin-top: 8px;
+    height: 6px;
+    background: var(--bg-secondary);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.stat-fill {
+    height: 100%;
+    background: var(--health-color);
+    border-radius: 3px;
+    transition: width 0.5s ease;
+}
+
+.stat-fill.armor-fill {
+    background: var(--armor-color);
+}
+
+.stat-box.health .stat-value { color: var(--health-color); }
+.stat-box.armor .stat-value { color: var(--armor-color); }
+.stat-box.money .stat-value { color: var(--money-color); }
+
+/* ===== 武器信息 ===== */
+.weapon-info {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border-color);
+}
+
+.weapon-label {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+}
+
+.weapon-name {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    text-transform: uppercase;
+}
+
+.weapon-ammo {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    margin-left: auto;
+}
+
+.kda-hint {
+    font-size: 0.8rem;
+    color: var(--warning);
+    text-align: center;
+    margin-top: -8px;
+    margin-bottom: 12px;
+    opacity: 0.85;
+}
+
+/* ===== 回合信息条 ===== */
+.round-info-bar {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 12px 20px;
+    margin-bottom: 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.95rem;
+    color: var(--text-secondary);
+}
+
+.round-info-bar strong {
+    color: var(--text-bright);
+    font-size: 1.1rem;
+}
+
+.round-phase {
+    padding: 4px 12px;
+    border-radius: 20px;
+    background: rgba(52, 152, 219, 0.15);
+    color: var(--info);
+    font-size: 0.85rem;
+    font-weight: 500;
+    text-transform: uppercase;
+}
+
+/* ===== 所有玩家列表 ===== */
+.allplayers-section {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 16px;
+    padding: 20px;
+    margin-bottom: 20px;
+}
+
+.allplayers-section h4 {
+    color: var(--text-primary);
+    margin-bottom: 16px;
+    font-size: 1.1rem;
+}
+
+.players-table {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.player-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 16px;
+    background: var(--bg-primary);
+    border-radius: 8px;
+    border-left: 3px solid transparent;
+    transition: all 0.2s;
+}
+
+.player-row:hover {
+    background: var(--bg-hover);
+}
+
+.player-row.local {
+    border-left-color: var(--text-primary);
+}
+
+.player-row.ct {
+    border-left-color: var(--ct-color);
+}
+
+.player-row.terrorist {
+    border-left-color: var(--t-color);
+}
+
+.player-row-name {
+    font-weight: 500;
+    min-width: 120px;
+}
+
+.player-row-team {
+    font-size: 0.8rem;
+    padding: 2px 8px;
+    border-radius: 12px;
+    text-transform: uppercase;
+    min-width: 50px;
+    text-align: center;
+}
+
+.player-row-team.ct {
+    background: rgba(52, 152, 219, 0.15);
+    color: var(--ct-color);
+}
+
+.player-row-team.terrorist {
+    background: rgba(233, 69, 96, 0.15);
+    color: var(--t-color);
+}
+
+.player-row-stats {
+    display: flex;
+    gap: 16px;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.player-row-stat {
+    display: flex;
+    gap: 4px;
+}
+
+.player-row-stat .label {
+    color: var(--text-secondary);
+}
+
+.player-row-stat .value {
+    color: var(--text-bright);
+    font-weight: 500;
+}
+
+/* ===== 配置卡片 ===== */
+.config-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 20px;
+}
+
+.config-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+}
+
+.config-header h3 {
+    color: var(--text-primary);
+    font-size: 1.1rem;
+}
+
+.config-collapsed {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.3s ease;
+}
+
+.config-collapsed.expanded {
+    max-height: 2000px;
+}
+
+.config-step {
+    margin-bottom: 16px;
+}
+
+.config-step h4 {
+    color: var(--info);
+    margin-bottom: 6px;
+    font-size: 0.95rem;
+}
+
+.config-step p {
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+    font-size: 0.9rem;
+}
+
+.config-code {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 12px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 0.8rem;
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: var(--text-bright);
+}
+
+code {
+    background: var(--bg-primary);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 0.85rem;
+}
+
+footer {
+    text-align: center;
+    padding: 40px 0 20px;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* ===== 响应式 ===== */
+@media (max-width: 768px) {
+    .match-banner {
+        flex-direction: column;
+        text-align: center;
+    }
+
+    .score-board {
+        font-size: 2rem;
+    }
+
+    .player-stats-row {
+        gap: 8px;
+    }
+
+    .stat-box {
+        min-width: 70px;
+        padding: 12px;
+    }
+
+    .stat-value {
+        font-size: 1.2rem;
+    }
+
+    .player-row {
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+}
+
+/* ===== Overlay 配置页 ===== */
+.overlay-header {
+    margin-bottom: 24px;
+}
+
+.overlay-header h2 {
+    color: var(--text-bright);
+    margin-bottom: 4px;
+}
+
+.overlay-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 16px;
+    padding: 28px;
+}
+
+.overlay-form {
+    max-width: 560px;
+}
+
+.form-group {
+    margin-bottom: 20px;
+}
+
+.form-group label {
+    display: block;
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+
+.form-group input[type="text"],
+.form-group input[type="number"] {
+    width: 100%;
+    padding: 12px 16px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    color: var(--text-bright);
+    font-size: 1rem;
+    transition: border-color 0.3s;
+}
+
+.form-group input:focus {
+    outline: none;
+    border-color: var(--text-primary);
+}
+
+.form-row {
+    display: flex;
+    gap: 16px;
+}
+
+.form-row .form-group {
+    flex: 1;
+}
+
+.form-group input[type="range"] {
+    width: 100%;
+    margin-top: 4px;
+}
+
+#opacity-value {
+    display: inline-block;
+    margin-left: 8px;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+/* Toggle Switch */
+.toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 52px;
+    height: 28px;
+}
+
+.toggle-switch input {
+    position: absolute;
+    opacity: 0;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 1;
+    margin: 0;
+}
+
+.toggle-slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: var(--border-color);
+    border-radius: 28px;
+    transition: 0.3s;
+}
+
+.toggle-slider:before {
+    position: absolute;
+    content: "";
+    height: 20px;
+    width: 20px;
+    left: 4px;
+    bottom: 4px;
+    background: var(--text-bright);
+    border-radius: 50%;
+    transition: 0.3s;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+    background: var(--success);
+}
+
+.toggle-switch input:checked + .toggle-slider:before {
+    transform: translateX(24px);
+}
+
+.form-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 28px;
+    flex-wrap: wrap;
+}
+
+.overlay-hint {
+    margin-top: 28px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border-color);
+}
+
+.overlay-hint h4 {
+    color: var(--text-bright);
+    margin-bottom: 12px;
+    font-size: 1rem;
+}
+
+.overlay-hint ul {
+    list-style: none;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    line-height: 1.8;
+}
+
+.overlay-hint ul li {
+    padding-left: 20px;
+    position: relative;
+}
+
+.overlay-hint ul li::before {
+    content: "•";
+    position: absolute;
+    left: 0;
+    color: var(--text-primary);
+}
+
+/* ===== LOL 自动化面板 ===== */
+.lol-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.lol-topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.lol-topbar-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.lol-conn-info {
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.lol-note {
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.lol-chatbox {
+    margin-top: 10px;
+    border: 1px dashed var(--border, #3a3f4b);
+    border-radius: 10px;
+    padding: 8px;
+    background: var(--bg-primary, #1b1f27);
+}
+
+.lol-chatbox-head {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+}
+
+.lol-chat-text {
+    width: 100%;
+    min-height: 120px;
+    resize: vertical;
+    box-sizing: border-box;
+    background: var(--bg-secondary, #11141a);
+    color: var(--text-primary, #e6e6e6);
+    border: 1px solid var(--border, #3a3f4b);
+    border-radius: 8px;
+    padding: 8px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.82rem;
+    line-height: 1.5;
+    white-space: pre;
+}
+
+.lol-chatbox .btn {
+    margin-top: 6px;
+}
+
+.lol-live {
+    font-size: 0.85rem;
+    font-weight: 600;
+    padding: 2px 10px;
+    border-radius: 10px;
+    display: none;
+}
+
+.lol-live.alive {
+    display: inline-block;
+    color: #1f7a3d;
+    background: rgba(31, 122, 61, 0.12);
+}
+
+.lol-live.dead {
+    display: inline-block;
+    color: var(--danger, #ff5a5a);
+    background: rgba(255, 90, 90, 0.12);
+    animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+.lol-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 16px;
+    padding: 20px 24px;
+}
+
+.lol-card-title {
+    color: var(--text-bright);
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin-bottom: 16px;
+}
+
+.lol-toolbar {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.lol-result {
+    border-radius: 12px;
+    padding: 14px 18px;
+    font-size: 0.95rem;
+    line-height: 1.6;
+    border: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    animation: fadeIn 0.3s ease;
+}
+
+.lol-result.success {
+    border-left: 3px solid var(--success);
+}
+
+.lol-result.error {
+    border-left: 3px solid var(--danger);
+}
+
+.lol-result code {
+    background: var(--bg-primary);
+    padding: 2px 6px;
+    border-radius: 4px;
+    word-break: break-all;
+}
+
+.lol-form {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.lol-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.lol-field > label {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.lol-field input[type="text"],
+.lol-field select {
+    width: 100%;
+    padding: 10px 14px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    color: var(--text-bright);
+    font-size: 0.95rem;
+    transition: border-color 0.3s;
+}
+
+.lol-field input:focus,
+.lol-field select:focus {
+    outline: none;
+    border-color: var(--text-primary);
+}
+
+.lol-field-inline {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.lol-field-inline select {
+    flex: 1;
+}
+
+.lol-toggles {
+    display: flex;
+    gap: 18px;
+    flex-wrap: wrap;
+}
+
+.lol-check {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.lol-check input {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--text-primary);
+    cursor: pointer;
+}
+
+.lol-form-actions {
+    display: flex;
+    gap: 12px;
+}
+
+.lol-teams {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.lol-team {
+    flex: 1;
+    min-width: 220px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 16px;
+    padding: 16px 18px;
+}
+
+.lol-team.ct {
+    border-top: 3px solid var(--ct-color);
+}
+
+.lol-team.tr {
+    border-top: 3px solid var(--t-color);
+}
+
+.lol-team-head {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-bright);
+}
+
+.lol-team.ct .lol-team-head {
+    color: var(--ct-color);
+}
+
+.lol-team.tr .lol-team-head {
+    color: var(--t-color);
+}
+
+.lol-team-count {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    background: var(--bg-primary);
+    padding: 1px 8px;
+    border-radius: 10px;
+}
+
+.lol-player-row {
+    padding: 8px 12px;
+    background: var(--bg-primary);
+    border-radius: 8px;
+    margin-bottom: 6px;
+    border-left: 3px solid transparent;
+}
+
+.lol-team.ct .lol-player-row {
+    border-left-color: var(--ct-color);
+}
+
+.lol-team.tr .lol-player-row {
+    border-left-color: var(--t-color);
+}
+
+.lol-player-name {
+    font-size: 0.95rem;
+    color: var(--text-bright);
+}
+
+.lol-player-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+}
+
+.lol-player-score {
+    font-size: 0.8rem;
+    color: var(--warning);
+    font-weight: 600;
+}
+
+.lol-player-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-top: 3px;
+}
+
+.lol-player-tier {
+    font-size: 0.82rem;
+    color: var(--info);
+}
+
+.lol-player-perf {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+}
+
+.lol-player-recent {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    opacity: 0.85;
+}
+
+.lol-empty {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+}
+
+.lol-players-box {
+    min-height: 240px;
+}
+
+.lol-empty-placeholder {
+    min-height: 240px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-secondary);
+    font-size: 0.95rem;
+    opacity: 0.6;
+}
+
+.lol-horse {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    background: var(--bg-primary);
+    border-radius: 10px;
+    margin-bottom: 8px;
+    border-left: 3px solid var(--border-color);
+}
+
+.lol-horse.top {
+    border-left-color: var(--warning);
+    background: rgba(244, 208, 63, 0.08);
+}
+
+.lol-horse.bottom {
+    border-left-color: var(--t-color);
+}
+
+.lol-horse-rank {
+    font-weight: 700;
+    color: var(--text-secondary);
+    min-width: 28px;
+}
+
+.lol-horse-name {
+    flex: 1;
+    font-size: 0.95rem;
+    color: var(--text-bright);
+}
+
+.lol-horse-lv {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    margin-left: 4px;
+}
+
+.lol-horse-tier {
+    font-size: 0.85rem;
+    color: var(--info);
+    text-align: right;
+}
+
+.lol-horse-perf {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+}
+
+.lol-horse-tag {
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 1px 8px;
+    border-radius: 8px;
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.lol-horse.top .lol-horse-tag {
+    color: var(--warning);
+    background: rgba(244, 208, 63, 0.12);
+}
+
+.lol-horse.bottom .lol-horse-tag {
+    color: var(--danger, #ff5a5a);
+    background: rgba(255, 90, 90, 0.12);
+}
+
+.lol-horse.mid .lol-horse-tag {
+    color: var(--info);
+    background: rgba(74, 163, 255, 0.12);
+}
+
+@media (max-width: 768px) {
+    .lol-toolbar .btn {
+        flex: 1 1 calc(50% - 10px);
+    }
+}

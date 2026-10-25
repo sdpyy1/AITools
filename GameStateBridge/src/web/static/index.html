@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GameStateBridge</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>GameStateBridge</h1>
+            <p class="subtitle">游戏对局信息聚合服务</p>
+        </header>
+
+        <nav class="nav-tabs">
+            <button class="tab-btn active" data-tab="games">游戏列表</button>
+            <button class="tab-btn" data-tab="dashboard">仪表盘</button>
+            <button class="tab-btn" data-tab="overlay">Overlay</button>
+        </nav>
+
+        <main>
+            <!-- 游戏列表页 -->
+            <section id="games-tab" class="tab-content active">
+                <div class="games-grid" id="games-grid"></div>
+            </section>
+
+            <!-- 仪表盘页 -->
+            <section id="dashboard-tab" class="tab-content">
+                <div id="dashboard-header">
+                    <h2 id="dashboard-title">请选择一个游戏</h2>
+                    <div class="controls">
+                        <button id="btn-auto-config" class="btn btn-info" style="display:none;">一键配置</button>
+                        <button id="btn-refresh" class="btn btn-primary">刷新</button>
+                        <button id="btn-toggle" class="btn btn-secondary">激活</button>
+                    </div>
+                </div>
+
+                <div id="dashboard-content">
+                    <!-- 连接状态（简化） -->
+                    <div class="connection-bar" id="connection-bar">
+                        <span id="conn-status-text">未选择游戏</span>
+                    </div>
+
+                    <!-- 对局可视化（主要区域） -->
+                    <div id="match-visual" style="display:none;">
+                        <!-- 地图与比分横幅 -->
+                        <div class="match-banner">
+                            <div class="map-info">
+                                <span class="map-name" id="map-name">--</span>
+                                <span class="game-mode" id="game-mode">--</span>
+                            </div>
+                            <div class="score-board">
+                                <div class="team ct">
+                                    <span class="team-name">CT</span>
+                                    <span class="team-score" id="score-ct">0</span>
+                                </div>
+                                <div class="score-divider">:</div>
+                                <div class="team t">
+                                    <span class="team-name">T</span>
+                                    <span class="team-score" id="score-t">0</span>
+                                </div>
+                            </div>
+                            <div class="match-phase" id="match-phase">--</div>
+                        </div>
+
+                        <!-- 本地玩家面板 -->
+                        <div class="player-panel" id="player-panel">
+                            <div class="player-header">
+                                <span class="player-name" id="player-name">--</span>
+                                <span class="player-team" id="player-team">--</span>
+                            </div>
+                            <div class="player-stats-row">
+                                <div class="stat-box health">
+                                    <div class="stat-label">血量</div>
+                                    <div class="stat-value" id="player-health">--</div>
+                                    <div class="stat-bar"><div class="stat-fill" id="health-bar"></div></div>
+                                </div>
+                                <div class="stat-box armor">
+                                    <div class="stat-label">护甲</div>
+                                    <div class="stat-value" id="player-armor">--</div>
+                                    <div class="stat-bar"><div class="stat-fill armor-fill" id="armor-bar"></div></div>
+                                </div>
+                                <div class="stat-box money">
+                                    <div class="stat-label">金钱</div>
+                                    <div class="stat-value" id="player-money">--</div>
+                                </div>
+                            </div>
+                            <!-- 战绩行：累计 KDA 或本回合数据 -->
+                            <div class="player-stats-row" id="kda-row">
+                                <div class="stat-box kda">
+                                    <div class="stat-label" id="label-kills">击杀</div>
+                                    <div class="stat-value" id="player-kills">--</div>
+                                </div>
+                                <div class="stat-box kda">
+                                    <div class="stat-label" id="label-deaths">死亡</div>
+                                    <div class="stat-value" id="player-deaths">--</div>
+                                </div>
+                                <div class="stat-box kda">
+                                    <div class="stat-label" id="label-assists">助攻</div>
+                                    <div class="stat-value" id="player-assists">--</div>
+                                </div>
+                                <div class="stat-box kda">
+                                    <div class="stat-label" id="label-mvps">MVP</div>
+                                    <div class="stat-value" id="player-mvps">--</div>
+                                </div>
+                            </div>
+                            <div class="kda-hint" id="kda-hint" style="display:none;"></div>
+                            <div class="weapon-info" id="weapon-info">
+                                <span class="weapon-label">当前武器</span>
+                                <span class="weapon-name" id="weapon-name">--</span>
+                                <span class="weapon-ammo" id="weapon-ammo"></span>
+                            </div>
+                        </div>
+
+                        <!-- 回合信息 -->
+                        <div class="round-info-bar" id="round-info-bar">
+                            <span>回合 <strong id="round-num">--</strong></span>
+                            <span class="round-phase" id="round-phase">--</span>
+                        </div>
+
+                        <!-- 所有玩家列表 -->
+                        <div class="allplayers-section" id="allplayers-section">
+                            <h4>所有玩家</h4>
+                            <div class="players-table" id="players-table"></div>
+                        </div>
+                    </div>
+
+                    <!-- 配置信息（已配置后折叠） -->
+                    <div class="config-card" id="config-card" style="display:none;">
+                        <div class="config-header" id="config-header">
+                            <h3>配置说明</h3>
+                            <button class="btn btn-sm" id="btn-config-toggle">展开</button>
+                        </div>
+                        <div id="config-content" class="config-collapsed"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Overlay 配置页 -->
+            <section id="overlay-tab" class="tab-content">
+                <div class="overlay-header">
+                    <h2>死亡浏览器</h2>
+                    <p class="subtitle">当你在游戏中死亡时，自动打开指定网页；复活后暂停并最小化浏览器</p>
+                </div>
+
+                <div class="overlay-card">
+                    <div class="overlay-form">
+                        <div class="form-group">
+                            <label>功能开关</label>
+                            <div class="toggle-switch">
+                                <input type="checkbox" id="overlay-enabled" checked>
+                                <span class="toggle-slider"></span>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="overlay-url">死亡时打开的网页地址</label>
+                            <input type="text" id="overlay-url" value="https://www.douyin.com" placeholder="https://www.douyin.com">
+                            <p style="color:var(--text-secondary);font-size:0.8rem;margin-top:4px;">会用本机 Google Chrome 打开；复活后会先暂停播放，再最小化浏览器。</p>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="overlay-player-steam-id">你的 SteamID64（推荐）</label>
+                            <input type="text" id="overlay-player-steam-id" placeholder="例如 7656119...，用于区分你本人和观战目标">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="overlay-player-name">游戏内用户名（备用）</label>
+                            <input type="text" id="overlay-player-name" value="爱喝东方树叶" placeholder="SteamID 为空时用名字匹配">
+                        </div>
+
+                        <div class="form-actions">
+                            <button id="btn-save-overlay" class="btn btn-primary">保存配置</button>
+                            <button id="btn-test-show" class="btn btn-info">测试显示</button>
+                            <button id="btn-test-hide" class="btn btn-secondary">测试隐藏</button>
+                        </div>
+                    </div>
+
+                    <div class="overlay-hint">
+                        <h4>使用说明</h4>
+                        <ul>
+                            <li>激活 CS2 适配器后，程序会自动检测你的生死状态</li>
+                            <li>建议填写 SteamID64，程序会优先按 SteamID 匹配你本人，避免观战队友时误判</li>
+                            <li>死亡时会打开 Google Chrome 访问配置的网页</li>
+                            <li>复活时会先发送一次空格暂停播放，然后最小化 Chrome</li>
+                            <li>其它配置会自动保存到本地，下次启动时恢复</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <p>GameStateBridge v0.1.0</p>
+        </footer>
+    </div>
+
+    <script src="/app.js"></script>
+</body>
+</html>
